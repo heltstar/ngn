@@ -8,7 +8,7 @@ OBJS=dictionary.o strlib.o iniparser.o cfs_mysql.o urlencode.o cfs.o
 	$(CC) $(CFLAGS) -c $<
 
 cfs:$(OBJS)
-	$(CC) $(CFLAGS) $^ -o $@ -g -lmysqlclient -lcrypto -lpcre -L /usr/lib/mysql/ -I /usr/include/mysql/ 
+	$(CC) $(CFLAGS) $^ -o $@ -g -lmysqlclient -lcrypto -lpcre -L /usr/lib/mysql/ -I /usr/include/mysql/ -lpthread
 
 cfs.o: cfs.c 
 	$(CC) $(CFLAGS) -c cfs.c -lmysqlclient -L /usr/lib/mysql/ -I /usr/include/mysql/ 	
