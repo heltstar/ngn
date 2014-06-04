@@ -573,6 +573,9 @@ my_cfs_download(cfs_cfsedge_config_t *pccc, char *file_path, long long file_size
             if(fpt[i].flag == 0 || fpt[i].flag == -1)
             {
                 args->fpt = (file_part_t *)&fpt[i];
+				pthread_mutex_lock(&g_mutex_lock);
+				args->fpt->flag = 2;
+				pthread_mutex_unlock(&g_mutex_lock);
                 break;
             }
         }
