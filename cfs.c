@@ -2141,7 +2141,7 @@ static int do_send_file(int sockfd)
 
 static unsigned long get_file_size(const char *path)
 {
-    unsigned long filesize = -1;	
+    long long filesize = -1;	
     struct stat statbuff;
     if(stat(path, &statbuff) < 0){
         return filesize;
