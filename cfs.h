@@ -11,7 +11,6 @@ do \
 
 
 #define LISTEN_NUMS 2048
-#define MAX_FD  1024
 
 enum {ERR, WARN, NOTICE};
 
@@ -27,7 +26,6 @@ typedef struct cfs_req {
 
 typedef struct my_req {    // test .....
     short       req_port;
-//    char        *file_path;
     char        *req_host;
     char        *req_file_path;
     long long   file_size;
@@ -97,12 +95,9 @@ typedef struct cfs_cfsedge_config {
 // added for cfs download 
 typedef struct file_part
 {
-    int partnum;
     char pathname[256];
-//    long int lenth;
     long int offset;
     long int limit;
-//    struct file_part *next;
 }file_part_t;
 
 typedef struct cfs_config {
@@ -142,16 +137,13 @@ static int      my_cfs_download (my_req_t *req_info);
 
 static int      cfs_mkrdir (char *file_path, mode_t mode);
 static void*    cfs_download_part (void *params);
-//static void*    my_cfs_download_part (void *params);
 
 static ssize_t  cfs_writen (const int sock, void *data, size_t length);
 static ssize_t  cfs_readn (const int fd, void *buf, size_t length);
 static int      cfs_get_header (cfs_req_t *req, cfs_http_header_t *header);
-//static int      my_cfs_get_header (cfs_req_t *req, cfs_http_header_t *header);
 
 static void     cfs_exit_download (cfs_thread_arg_t *args, void *body_buff, int code);
 static int      cfs_log (int level, char *fmt, ...);
-//static int      cfs_log (__FUNCTION__,__LINE__, int level, char *fmt, ...);
 static void     cfs_init();
 static void*    signal_hander(int num);
 static void     cfs_disk_init(MYSQL *conn_ptr, cfs_disk_t **disk, unsigned long *len);
@@ -163,8 +155,6 @@ void   *cfs_malloc(size_t size);
 void   cfs_split(const char *str, const char delimiter, char **key, char **val);
 
 void* cfs_server_run();
-//static int http_cmd_head(int sock, char *buf);
-//static int http_cmd_get(int sock, char *buf);
 static unsigned long get_file_size(const char *path);
 static int do_send_file(int sockfd);
 #endif

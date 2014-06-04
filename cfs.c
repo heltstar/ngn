@@ -123,7 +123,6 @@ int main(int argc, char **argv)
             cfs_cfsedge_config_t *pccc = g_config->cfsedge;// first try to get resources from other cfs nodes.
             while(pccc != NULL)//
             {	
-                printf("while loop.\n");
                 my_record->req_port = pccc->port;
                 my_record->req_host = strdup(pccc->host);
                 my_record->req_file_path = strdup(result_row[1]);
@@ -495,7 +494,11 @@ cfs_download(cfs_req_t *req_info, char *work_path)
 my_cfs_download(my_req_t *req_info)
 {
     long long nwrite = req_info->file_size;
-
+    send_struct_t sst;
+    int sock;
+    int fd;
+    int wnd,rnd;
+    char recv_buff[4096]={0};
     // file already exists
     if (access(req_info->req_file_path, 0) == 0) {
         cfs_log(NOTICE, "File is exist %s", req_info->req_file_path);
@@ -503,21 +506,22 @@ my_cfs_download(my_req_t *req_info)
         return 0;
     }
 
-    int sock = cfs_socket_init(req_info->req_host, req_info->req_port);
+    sock = cfs_socket_init(req_info->req_host, req_info->req_port);
     if (sock < 0){
         printf("sock init error\n"); 
         return -1;
     }
 
-    send_struct_t sst;
     sst.file_exist_flag = 0;
     sst.file_size = 0;
     strcpy(sst.file_path,req_info->req_file_path);
     printf("%d,sizoef(sst)=%lu\n",__LINE__,sizeof(sst));
-    int wnd = cfs_writen(sock, &sst, sizeof(sst));
+
+    wnd = cfs_writen(sock, &sst, sizeof(sst));
     printf("%d,writen size =%u\n",__LINE__,wnd);
+
     memset(&sst, 0, sizeof(sst));
-    int rnd = cfs_readn(sock,(void*)&sst,sizeof(sst));
+    rnd = cfs_readn(sock,(void*)&sst,sizeof(sst));
     if(rnd != sizeof(sst))
     {
         printf("error.,rnd=%d\n",rnd);
@@ -534,25 +538,19 @@ my_cfs_download(my_req_t *req_info)
 
     nwrite = sst.file_size ;
 
-    int fd = open(sst.file_path, O_CREAT|O_WRONLY, 0755);
-    int nres;
-    char recv_buff[4096]={0};
+    fd = open(sst.file_path, O_CREAT|O_WRONLY, 0755);
     printf("while :read from nodecfs data\n");
-    while((nres = cfs_readn(sock, recv_buff, sizeof(recv_buff))) != 0) 
+    while((rnd = cfs_readn(sock, recv_buff, sizeof(recv_buff))) != 0) // write buff to file
     {    
-        // write buff to file
-        printf("read data from node cfs size nres = %d\n",nres);
-        wnd = cfs_writen(fd, recv_buff, nres);
+        printf("read data from node cfs size rnd = %d\n",rnd);
+        wnd = cfs_writen(fd, recv_buff, rnd);
         printf("write to files data size wnd= %d\n",wnd);
-        nwrite -= nres;
-    } 
+        nwrite -= rnd;
+    }
+
     if(nwrite > 0)
     {
         printf("get data error.\n");
-    }
-    else
-    {
-        printf("get data ok.\n");
     }
 
     close(fd);
@@ -1647,8 +1645,8 @@ void* cfs_server_run()
     int err;
     int connfd;
 
-    struct sockaddr_in serv_addr;   //服务器地址
-    struct sockaddr_in cli_addr;      //客户端地址
+    struct sockaddr_in serv_addr;   
+    struct sockaddr_in cli_addr;  
     socklen_t serv_len;
     socklen_t cli_len;
 
@@ -1715,34 +1713,39 @@ static int do_send_file(int sockfd)
     unsigned long data_rds = 0;
     FILE *filep; 
     send_struct_t *sst_tmp;
-
-    char *rdbuf = (char*)malloc(sizeof(send_struct_t));
-
-    memset(rdbuf, 0, sizeof(send_struct_t));
-    int rnd = cfs_readn(sockfd,rdbuf,sizeof(send_struct_t));
     int wnd = 0;
+    int rnd =0;
+    char *rdbuf = NULL;
+    
+    rdbuf = (char*)malloc(sizeof(send_struct_t));
+    memset(rdbuf, 0, sizeof(send_struct_t));
+    rnd = cfs_readn(sockfd,rdbuf,sizeof(send_struct_t));
+    sst_tmp = (send_struct_t*)rdbuf;
+
     if(rnd != sizeof(send_struct_t))
     {
         printf("%d,%d !=recve\n",__LINE__,rnd);
-        sst_tmp = (send_struct_t*)rdbuf;
         sst_tmp->file_exist_flag = 0;
         sst_tmp->file_size = 0; 
+
         wnd = cfs_writen(sockfd, (char*)sst_tmp, sizeof(send_struct_t));
+
         printf("%d,write struct size=%d, sst_tmp->file_size=%llu, sst_tmp->file_exist_flag= %d\n",__LINE__,wnd, sst_tmp->file_size, sst_tmp->file_exist_flag);
+        free(rdbuf);
         return -1;
     }
     else
     {
         printf("%d,%d ==write\n",__LINE__,rnd);
-        sst_tmp = (send_struct_t*)rdbuf;
-        if(0 == access(sst_tmp->file_path, 0))
+        if(0 == access(sst_tmp->file_path, R_OK))
         {
             sst_tmp->file_exist_flag = 1;
         }
         sst_tmp->file_size = get_file_size(sst_tmp->file_path);
-        data_size = sst_tmp->file_size;
+
         wnd = cfs_writen(sockfd, (char*)sst_tmp, sizeof(send_struct_t));
         printf("%d,write struct size=%d, sst_tmp->file_size=%llu, sst_tmp->file_exist_flag= %d\n",__LINE__,wnd, sst_tmp->file_size, sst_tmp->file_exist_flag);
+
         if(sst_tmp->file_exist_flag == 0)
         {
             free(rdbuf);
@@ -1750,22 +1753,23 @@ static int do_send_file(int sockfd)
         }
     }
 
+    data_size = sst_tmp->file_size;
     filep = fopen(sst_tmp->file_path,"r");
+    free(rdbuf);
     if(NULL == filep)
     {
-
         printf("file_path,%s:NULL == filep\n",sst_tmp->file_path);
+        fclose(filep);
+        return -1;
     }
-    else
-    {
-        printf("file_path,%s:NULL != filep\n",sst_tmp->file_path);
-    }
-    ulres = 0;
+
     while(ulres < data_size)  // send request files 
     {
         if((data_rds = fread(rw_buf, 1,sizeof(rw_buf), filep)) == -1)
         {
             cfs_log(ERR, "read file error");
+            fclose(filep);
+            return -1;
         }
         if(data_rds == 0)
         {
@@ -1776,9 +1780,9 @@ static int do_send_file(int sockfd)
         wnd = cfs_writen(sockfd, rw_buf, data_rds);
         printf("%d,writen data size=%d\n",__LINE__,wnd);
     }
+
     printf("send data end.\n");
     fclose(filep);
-    free(rdbuf);
 
     return 0;
 }
