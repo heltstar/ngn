@@ -33,6 +33,13 @@ typedef struct my_req {    // test .....
     long long   file_size;
 } my_req_t;
 
+typedef struct send_struct
+{    
+    int file_exist_flag;
+    char file_path[256];
+    long long file_size;
+}send_struct_t;
+
 typedef struct cfs_http_header {
     short       accept_ranges;
     short       http_code;
@@ -41,10 +48,6 @@ typedef struct cfs_http_header {
     char        content_type[32];
     char        server[32];
 } cfs_http_header_t;
-
-typedef struct http_header_server { //test ....
-    char        *file_path;
-}http_header_server_t;
 
 typedef struct cfs_thread_arg {
     int         *nthread;
@@ -85,21 +88,21 @@ typedef struct cfs_mysql_config {
 
 /*added for cfs download*/
 typedef struct cfs_cfsedge_config {
-	char    *host;
-	short   port;
-	char	*key;
-	struct cfs_cfsedge_config *next;
+    char    *host;
+    short   port;
+    char	*key;
+    struct cfs_cfsedge_config *next;
 }cfs_cfsedge_config_t;
 
 // added for cfs download 
 typedef struct file_part
 {
-	int partnum;
-	char pathname[256];
-	long int lenth;
-	long int datastar;
-	long int dataend;
-	struct file_part *next;
+    int partnum;
+    char pathname[256];
+//    long int lenth;
+    long int offset;
+    long int limit;
+//    struct file_part *next;
 }file_part_t;
 
 typedef struct cfs_config {
@@ -160,7 +163,7 @@ void   *cfs_malloc(size_t size);
 void   cfs_split(const char *str, const char delimiter, char **key, char **val);
 
 void* cfs_server_run();
-static int http_cmd_head(int sock, char *buf);
-static int http_cmd_get(int sock, char *buf);
-static unsigned long get_file_size(const char *path);
+//static int http_cmd_head(int sock, char *buf);
+//static int http_cmd_get(int sock, char *buf);
+//static unsigned long get_file_size(const char *path);
 #endif
