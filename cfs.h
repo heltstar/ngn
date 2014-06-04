@@ -142,7 +142,7 @@ static int      my_cfs_download (my_req_t *req_info);
 
 static int      cfs_mkrdir (char *file_path, mode_t mode);
 static void*    cfs_download_part (void *params);
-static void*    my_cfs_download_part (void *params);
+//static void*    my_cfs_download_part (void *params);
 
 static ssize_t  cfs_writen (const int sock, void *data, size_t length);
 static ssize_t  cfs_readn (const int fd, void *buf, size_t length);

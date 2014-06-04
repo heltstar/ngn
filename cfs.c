@@ -489,9 +489,9 @@ cfs_download(cfs_req_t *req_info, char *work_path)
 	static int
 my_cfs_download(my_req_t *req_info)
 {
-	char tmp_name[256]                    = {0};
-	char file_path[256]                   = {0};
-	const unsigned long long package_size = g_config->package_size;
+	//char tmp_name[256]                    = {0};
+	//char file_path[256]                   = {0};
+	//const unsigned long long package_size = g_config->package_size;
 
 	long long nwrite = req_info->file_size;
 
@@ -508,9 +508,9 @@ my_cfs_download(my_req_t *req_info)
 //		}
 //	}
 
-	int nthread     = 0;
-	int i           = 0;
-	int max_threads = g_config->thread_size;
+	//int nthread     = 0;
+	//int i           = 0;
+	//int max_threads = g_config->thread_size;
 
 	int sock = cfs_socket_init(req_info->req_host, req_info->req_port);
 	if (sock < 0){
@@ -536,63 +536,81 @@ my_cfs_download(my_req_t *req_info)
         close(sock);
 		return -1;
 	}
-	close(sock);
+//	close(sock);
 
 	nwrite = sst.file_size ;
-	// add thread download resource
-	while (nwrite > 0){
 
-		if (nthread >= max_threads) {
-            sleep(1);
-            continue;
-        }
-
-        my_thread_arg_t *args = (my_thread_arg_t *)malloc(sizeof(my_thread_arg_t));
-        if (args == NULL){
-            return -1;
-        }
-        args->req = req_info;
-        args->offset = i * package_size;
-        args->limit = (i * package_size) + package_size - 1;
-        args->path = strdup(sst.file_path);
-        args->nthread = &nthread;
-
-        pthread_t pid;
-        int res = pthread_create(&pid, NULL, my_cfs_download_part, (void *)args);
-        if (res == 0){
-            pthread_mutex_lock(&g_mutex_lock);
-            if (nthread < max_threads)
-                nthread++;
-            pthread_mutex_unlock(&g_mutex_lock);
-        }
-        nwrite -= package_size;
-        i++;
+    int fd = open(sst.file_path, O_CREAT|O_WRONLY, 0755);
+    int nres;
+    char recv_buff[2048]={0};
+    while((nres = cfs_readn(sock, recv_buff, 4096)) != 0) 
+    {    
+        // write buff to file
+        cfs_writen(fd, recv_buff, nres);
+        nwrite -= nres;
+    } 
+    if(nwrite > 0)
+    {
+        printf("get data error.\n");
     }
 
-    // wait thread all download done
-    while (!(nthread == 0)) {
-        if (req_info->file_size > (30 * 1024 * 1024)){
-            sleep(5);
-        }else if (req_info->file_size > (5 * 1024 * 1024)){
-            sleep(1);
-        }else{
-            usleep(250000);
-        }
-    }
+    close(fd);
+    close(sock);
 
-    // download failed delete temp file
-    if (g_download_stat == 1){
-        cfs_log(NOTICE, "download %s %s failed", req_info->req_host, req_info->req_file_path);
-        unlink(tmp_name);
-        return -1;
-    }
-
-    cfs_log(NOTICE, "write %s success %lld size", file_path, req_info->file_size);
-
-    if (rename(tmp_name, file_path)){
-        cfs_log(WARN, "Rename %s to %s failed: %s", tmp_name, file_path, strerror(errno));
-        return -1;
-    }
+    // add thread download resource
+    //	while (nwrite > 0){
+    //
+    //		if (nthread >= max_threads) {
+    //            sleep(1);
+    //            continue;
+    //        }
+    //
+    //        my_thread_arg_t *args = (my_thread_arg_t *)malloc(sizeof(my_thread_arg_t));
+    //        if (args == NULL){
+    //            return -1;
+    //        }
+    //        args->req = req_info;
+    //        args->offset = i * package_size;
+    //        args->limit = (i * package_size) + package_size - 1;
+    //        args->path = strdup(sst.file_path);
+    //        args->nthread = &nthread;
+    //
+    //        pthread_t pid;
+    //        int res = pthread_create(&pid, NULL, my_cfs_download_part, (void *)args);
+    //        if (res == 0){
+    //            pthread_mutex_lock(&g_mutex_lock);
+    //            if (nthread < max_threads)
+    //                nthread++;
+    //            pthread_mutex_unlock(&g_mutex_lock);
+    //        }
+    //        nwrite -= package_size;
+    //        i++;
+    //    }
+    //
+    //    // wait thread all download done
+    //    while (!(nthread == 0)) {
+    //        if (req_info->file_size > (30 * 1024 * 1024)){
+    //            sleep(5);
+    //        }else if (req_info->file_size > (5 * 1024 * 1024)){
+    //            sleep(1);
+    //        }else{
+    //            usleep(250000);
+    //        }
+    //    }
+    //
+    //    // download failed delete temp file
+    //    if (g_download_stat == 1){
+    //        cfs_log(NOTICE, "download %s %s failed", req_info->req_host, req_info->req_file_path);
+    //        unlink(tmp_name);
+    //        return -1;
+    //    }
+    //
+    //    cfs_log(NOTICE, "write %s success %lld size", file_path, req_info->file_size);
+    //
+    //    if (rename(tmp_name, file_path)){
+    //        cfs_log(WARN, "Rename %s to %s failed: %s", tmp_name, file_path, strerror(errno));
+    //        return -1;
+    //    }
 
     return 0;
 }
@@ -667,27 +685,27 @@ cfs_exit_download(cfs_thread_arg_t *args, void *body_buff, int code)
     pthread_exit(0);
 }
 
-    static void
-my_cfs_exit_download(my_thread_arg_t *args, void *body_buff)
-{
-    pthread_mutex_lock(&g_mutex_lock);
-    int thread = *args->nthread;
-    if (thread > 0){
-        *args->nthread = --thread;
-    }
-    pthread_mutex_unlock(&g_mutex_lock);
-
-    if (args != NULL) {
-        free(args); 
-        args = NULL;   
-    }
-
-    if (body_buff != NULL) {
-        free(body_buff); 
-        body_buff = NULL;   
-    }
-    pthread_exit(0);
-}
+//    static void
+//my_cfs_exit_download(my_thread_arg_t *args, void *body_buff)
+//{
+//    pthread_mutex_lock(&g_mutex_lock);
+//    int thread = *args->nthread;
+//    if (thread > 0){
+//        *args->nthread = --thread;
+//    }
+//    pthread_mutex_unlock(&g_mutex_lock);
+//
+//    if (args != NULL) {
+//        free(args); 
+//        args = NULL;   
+//    }
+//
+//    if (body_buff != NULL) {
+//        free(body_buff); 
+//        body_buff = NULL;   
+//    }
+//    pthread_exit(0);
+//}
 
     static void *
 cfs_download_part(void *params)
@@ -925,75 +943,75 @@ clean:
     return (void *)0;
 }
 
-    static void *
-my_cfs_download_part(void *params)
-{
-    my_thread_arg_t *args  = (my_thread_arg_t *)params;
-    file_part_t    *filep;
-    void   *recv_buff       = NULL;
-    int     nres;
-
-    filep = (file_part_t*)malloc(sizeof(file_part_t));
-    if (filep == NULL) {
-        my_cfs_exit_download(args, NULL);
-        return (void *)0;
-    }
-    memset(filep, 0, sizeof(file_part_t));
-
-    recv_buff = (void *)malloc(4096);
-    if (recv_buff == NULL) {
-        my_cfs_exit_download(args, NULL);
-        return (void *)0;
-    }
-    memset(recv_buff, 0, 4096);
-
-    int sock = cfs_socket_init(args->req->req_host, args->req->req_port);
-    if (sock < 0) {
-        if (filep != NULL) {
-            free(filep);
-            filep = NULL;
-        }
-        pthread_mutex_lock(&g_mutex_lock);
-        g_download_stat = 1;
-        pthread_mutex_unlock(&g_mutex_lock);
-        goto clean;
-    }
-
-    strcpy(filep->pathname, args->req->req_file_path);
-    filep->offset = args->offset;
-    filep->limit = args->limit;
-
-    // write socket http request
-    cfs_writen(sock, filep, sizeof(*filep));
-    if (filep != NULL) {
-        free(filep);
-        filep= NULL;
-    }
-
-    int fd = open(args->path, O_CREAT|O_WRONLY, 0755);
-    if (fd == -1) {
-        pthread_mutex_lock(&g_mutex_lock);
-        g_download_stat = 1;
-        pthread_mutex_unlock(&g_mutex_lock);
-        goto clean;
-    }
-    lseek(fd, args->offset, SEEK_SET);
-    while((nres = cfs_readn(sock, recv_buff, 4096)) != 0) 
-    {
-            // write buff to file
-            cfs_writen(fd, recv_buff, nres);
-    }
-
-clean:
-    close(fd);
-    close(sock);
-    if (recv_buff != NULL) {
-        free(recv_buff);
-        recv_buff = NULL;
-    }
-    my_cfs_exit_download(args, NULL);
-    return (void *)0;
-}
+//    static void *
+//my_cfs_download_part(void *params)
+//{
+//    my_thread_arg_t *args  = (my_thread_arg_t *)params;
+//    file_part_t    *filep;
+//    void   *recv_buff       = NULL;
+//    int     nres;
+//
+//    filep = (file_part_t*)malloc(sizeof(file_part_t));
+//    if (filep == NULL) {
+//        my_cfs_exit_download(args, NULL);
+//        return (void *)0;
+//    }
+//    memset(filep, 0, sizeof(file_part_t));
+//
+//    recv_buff = (void *)malloc(4096);
+//    if (recv_buff == NULL) {
+//        my_cfs_exit_download(args, NULL);
+//        return (void *)0;
+//    }
+//    memset(recv_buff, 0, 4096);
+//
+//    int sock = cfs_socket_init(args->req->req_host, args->req->req_port);
+//    if (sock < 0) {
+//        if (filep != NULL) {
+//            free(filep);
+//            filep = NULL;
+//        }
+//        pthread_mutex_lock(&g_mutex_lock);
+//        g_download_stat = 1;
+//        pthread_mutex_unlock(&g_mutex_lock);
+//        goto clean;
+//    }
+//
+//    strcpy(filep->pathname, args->req->req_file_path);
+//    filep->offset = args->offset;
+//    filep->limit = args->limit;
+//
+//    // write socket http request
+//    cfs_writen(sock, filep, sizeof(*filep));
+//    if (filep != NULL) {
+//        free(filep);
+//        filep= NULL;
+//    }
+//
+//    int fd = open(args->path, O_CREAT|O_WRONLY, 0755);
+//    if (fd == -1) {
+//        pthread_mutex_lock(&g_mutex_lock);
+//        g_download_stat = 1;
+//        pthread_mutex_unlock(&g_mutex_lock);
+//        goto clean;
+//    }
+//    lseek(fd, args->offset, SEEK_SET);
+//    while((nres = cfs_readn(sock, recv_buff, 4096)) != 0) 
+//    {
+//        // write buff to file
+//        cfs_writen(fd, recv_buff, nres);
+//    }
+//
+//clean:
+//    close(fd);
+//    close(sock);
+//    if (recv_buff != NULL) {
+//        free(recv_buff);
+//        recv_buff = NULL;
+//    }
+//    my_cfs_exit_download(args, NULL);
+//    return (void *)0;
+//}
     static int
 cfs_get_header(cfs_req_t *req, cfs_http_header_t *header)
 {
@@ -1923,30 +1941,24 @@ void* cfs_server_run()
         exit(-1);
     }
     cfs_log(NOTICE, "cfs server listen ok.");
-
-    //char buf[4096];  //读写缓冲区
-    //int num;
-    cfs_log(NOTICE, "cfs server fd=%d", sockfd);
     while(1)
     {
-            connfd = accept(sockfd, (struct sockaddr *)&cli_addr, &cli_len);
-            if(connfd < 0)
-            {
-                cfs_log(ERR, "fail to accept");
-                exit(-1);
-            }
-            cfs_log(NOTICE, "cfs server accept a new client.");
-            //global_status.sevice_sockd=new_sockfd;   
-            //global_status.client=client_info;   
-            pid_t child=fork();   
-            if(child==0)   
-            {      
-                close(sockfd);   
-                do_send_file(connfd);
-                close(connfd);
-                exit(0);   
-            }   
-            close(connfd);  
+        connfd = accept(sockfd, (struct sockaddr *)&cli_addr, &cli_len);
+        if(connfd < 0)
+        {
+            cfs_log(ERR, "fail to accept");
+            exit(-1);
+        }
+        cfs_log(NOTICE, "cfs server accept a new client.");
+        pid_t child=fork();   
+        if(child==0)   
+        {      
+            close(sockfd);   
+            do_send_file(connfd);
+            close(connfd);
+            exit(0);   
+        }   
+        close(connfd);  
     }
     exit(0);
 }
@@ -1954,7 +1966,7 @@ void* cfs_server_run()
 static int do_send_file(int sockfd)
 {
     long long data_size;
-    char rw_buf[2048]={0};
+    char rw_buf[4096]={0};
     unsigned long ulres = 0;
     unsigned long data_rds = 0;
     FILE *filep; 
