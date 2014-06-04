@@ -165,5 +165,6 @@ void   cfs_split(const char *str, const char delimiter, char **key, char **val);
 void* cfs_server_run();
 //static int http_cmd_head(int sock, char *buf);
 //static int http_cmd_get(int sock, char *buf);
-//static unsigned long get_file_size(const char *path);
+static unsigned long get_file_size(const char *path);
+static int do_send_file(int sockfd);
 #endif

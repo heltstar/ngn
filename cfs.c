@@ -527,11 +527,13 @@ my_cfs_download(my_req_t *req_info)
 	if(rnd != sizeof(sst))
 	{
 		printf("error.\n");
+        close(sock);
 		return -1;
 	}
 	if(sst.file_exist_flag != 1 || sst.file_size == 0)
 	{
 		printf("file not exist or file size is 0\n");
+        close(sock);
 		return -1;
 	}
 	close(sock);
@@ -1884,25 +1886,13 @@ void* cfs_server_run()
 {
     int sockfd;
     int err;
-    int i;
+    //int i;
     int connfd;
-    int fd_all[MAX_FD]; //保存所有描述符，用于select调用后，判断哪个可读
-
-    //下面两个备份原因是select调用后，会发生变化，再次调用select前，需要重新赋值
-    fd_set fd_read;                      //FD_SET数据备份
-    fd_set fd_select;                    //用于select
-
-    struct timeval timeout;           //超时时间备份
-    struct timeval timeout_select;  //用于select
 
     struct sockaddr_in serv_addr;   //服务器地址
     struct sockaddr_in cli_addr;      //客户端地址
     socklen_t serv_len;
     socklen_t cli_len;
-
-    //超时时间设置
-    timeout.tv_sec = 10;
-    timeout.tv_usec = 0;
 
     if ((sockfd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0){
         cfs_log(ERR, "cfs server socket error");
@@ -1934,41 +1924,11 @@ void* cfs_server_run()
     }
     cfs_log(NOTICE, "cfs server listen ok.");
 
-    //初始化fd_all数组
-    memset(fd_all, -1, sizeof(fd_all));
-
-    fd_all[0] = sockfd;   //第一个为监听套接字
-    FD_ZERO(&fd_read);
-    FD_SET(sockfd, &fd_read);  //将监听套接字加入fd_set
-
-    char buf[4096];  //读写缓冲区
-    int num;
-    int maxfd;
-    maxfd = fd_all[0];  //监听的最大套接字
+    //char buf[4096];  //读写缓冲区
+    //int num;
     cfs_log(NOTICE, "cfs server fd=%d", sockfd);
     while(1)
     {
-        //每次都需要重新赋值
-        fd_select = fd_read;
-        timeout_select = timeout;
-        //err = select(maxfd+1, &fd_select, NULL, NULL, NULL);
-        err = select(maxfd+1, &fd_select, NULL, NULL, (struct timeval *)&timeout_select);
-        if(err < 0)
-        {
-            cfs_log(NOTICE,"fail to select");
-            exit(-1);
-        }
-        else if(err == 0)
-        {
-            cfs_log(WARN, "select timeout");
-            continue;
-        }
-        cfs_log(NOTICE, "select ,maxfd=%d", maxfd);
-        //检测监听套接字是否可读
-        if(FD_ISSET(sockfd, &fd_select))
-        {
-            //可读，证明有新客户端连接服务器      
-            cli_len = sizeof(cli_addr);
             connfd = accept(sockfd, (struct sockaddr *)&cli_addr, &cli_len);
             if(connfd < 0)
             {
@@ -1976,62 +1936,70 @@ void* cfs_server_run()
                 exit(-1);
             }
             cfs_log(NOTICE, "cfs server accept a new client.");
-
-            //将新连接套接字加入fd_all及fd_read
-            for(i=0; i<MAX_FD; i++)
-            {
-                if(fd_all[i] != -1)
-                {
-                    continue;
-                }
-                else
-                {
-                    fd_all[i] = connfd;
-                    cfs_log(NOTICE, "cfs client fd_all[%d] join", i);
-                    break;
-                }
-            }
-            FD_SET(connfd, &fd_read);
-            if(maxfd < connfd)
-            {
-                maxfd = connfd;  //更新maxfd
-            }
-        }
-        //从1开始查看连接套接字是否可读，因为上面已经处理过0（sockfd）
-        for(i=1; i<=maxfd; i++)
-        {
-            cfs_log(NOTICE, "FD_ISSET fd_all[%d]=%d is test.", i, fd_all[i]);
-            if(FD_ISSET(fd_all[i], &fd_select))
-            {
-                cfs_log(NOTICE, "fd_all[%d] is ok", i);
-                num = read(fd_all[i], buf, sizeof(buf));
-                if(num > 0)
-                {
-                    if(strncmp("HEAD", buf, 4) == 0)
-                    {
-                        cfs_log(NOTICE, "client:fd_all[%d] HEAD CMD", i);
-//                        http_cmd_head(fd_all[i], buf);
-                        FD_CLR(fd_all[i], &fd_read);
-                        close(fd_all[i]);
-                        fd_all[i] = -1;
-                    }
-                    else if(strncmp("GET", buf, 3) == 0)
-                    {
-                        cfs_log(NOTICE, "client:fd_all[%d] GET CMD", i);
- //                       http_cmd_get(fd_all[i], buf);
-                        FD_CLR(fd_all[i], &fd_read);
-                        close(fd_all[i]);
-                        fd_all[i] = -1;
-                    }
-                    else
-                    {
-                        cfs_log(WARN, "client:fd_all[%d] is not GET or HEAD CMD", i);
-                    }
-                }
-            }
-        }
+            //global_status.sevice_sockd=new_sockfd;   
+            //global_status.client=client_info;   
+            pid_t child=fork();   
+            if(child==0)   
+            {      
+                close(sockfd);   
+                do_send_file(connfd);
+                close(connfd);
+                exit(0);   
+            }   
+            close(connfd);  
     }
     exit(0);
+}
+
+static int do_send_file(int sockfd)
+{
+    long long data_size;
+    char rw_buf[2048]={0};
+    unsigned long ulres = 0;
+    unsigned long data_rds = 0;
+    FILE *filep; 
+    send_struct_t *sst_tmp;
+
+    char *rdbuf = (char*)malloc(sizeof(send_struct_t));
+    int rnd = cfs_readn(sockfd,rdbuf,sizeof(send_struct_t));
+
+    if(rnd != sizeof(sizeof(send_struct_t)))
+    {
+        sst_tmp = (send_struct_t*)rdbuf;
+        sst_tmp->file_exist_flag = 0;
+        sst_tmp->file_size = 0; 
+        cfs_writen(sockfd, (char*)sst_tmp, sizeof(send_struct_t));
+
+        return -1;
+    }
+    else
+    {
+        sst_tmp = (send_struct_t*)rdbuf;
+        if(access(sst_tmp->file_path, 0))
+        {
+            sst_tmp->file_exist_flag = 1;
+        }
+        sst_tmp->file_size = get_file_size(sst_tmp->file_path);
+        data_size = sst_tmp->file_size;
+        cfs_writen(sockfd, (char*)sst_tmp, sizeof(send_struct_t));
+    }
+
+    filep = fopen(sst_tmp->file_path,"r");
+    while(ulres < data_size)  // send request files 
+    {
+        if((data_rds = fread(rw_buf, sizeof(rw_buf), 1, filep)) == -1)
+        {
+            cfs_log(ERR, "read file error");
+        }
+        ulres = ulres + data_rds;
+
+        cfs_writen(sockfd, rw_buf, data_rds);
+    }
+
+    fclose(filep);
+    free(rdbuf);
+
+    return 0;
 }
 
 //static int http_cmd_head(int sock, char *buf)
@@ -2171,14 +2139,14 @@ void* cfs_server_run()
 //    return 0;
 //}
 
-//static unsigned long get_file_size(const char *path)
-//{
-//    unsigned long filesize = -1;	
-//    struct stat statbuff;
-//    if(stat(path, &statbuff) < 0){
-//        return filesize;
-//    }else{
-//        filesize = statbuff.st_size;
-//    }
-//    return filesize;
-//}
+static unsigned long get_file_size(const char *path)
+{
+    unsigned long filesize = -1;	
+    struct stat statbuff;
+    if(stat(path, &statbuff) < 0){
+        return filesize;
+    }else{
+        filesize = statbuff.st_size;
+    }
+    return filesize;
+}
