@@ -35,7 +35,6 @@
 #define T_CDN_DISK          "cdn_disk"
 #define VERSION             "0.3.1"
 
-//#define cfs_log(
 
 extern int h_errno;
 extern int errno;
@@ -120,8 +119,6 @@ int main(int argc, char **argv)
             result_row = mysql_fetch_row(data_res);
 
             memset(my_record, 0, sizeof(my_req_t));
-   //         my_record->req_file_path = strdup(result_row[1]);
-    //        cfs_log(NOTICE, "first try to get resources(file_path=%s) from other cfs nodes...",my_record->file_path);
             printf("first try to get resources(file_path=%s) from other cfs node \n",result_row[1]);
             cfs_cfsedge_config_t *pccc = g_config->cfsedge;// first try to get resources from other cfs nodes.
             while(pccc != NULL)//
@@ -136,6 +133,7 @@ int main(int argc, char **argv)
 				int flag = my_cfs_download(my_record);
 				if(flag == -1)
 				{
+                    printf("cfs_download failed...\n");
 					cfs_free(my_record->req_host);
 					cfs_free(my_record->req_file_path);
 					pccc = pccc->next;
@@ -143,165 +141,172 @@ int main(int argc, char **argv)
 				}
 				else 
 				{
+                    printf("cfs_download success...\n");
 					cfs_free(my_record->req_file_path);
 					cfs_free(my_record->req_host);
-					goto cfs;  // download resources success.
-				}
-			}
+                    // delete file record mysql trigger insert to cdn_file_records table if disk_id > 0 
+                    sprintf(sql, "DELETE FROM %s WHERE id = %s", T_CDN_DOWN_QUEUE, result_row[0]);
+                    if (db_query(conn_ptr, sql)){
+                        cfs_log(ERR, "query delete date error");
+                    } 
+                    goto cfs;  // download resources success.
+                }
+            }
 
-			char now_date_str[32] = {0};
-			cfs_get_localtime(now_date_str);
-			flag = 0;// init flag for origin below
-			// update record start download date
-			sprintf(sql, "UPDATE %s SET start_date = '%s' WHERE id = %s", T_CDN_DOWN_QUEUE, now_date_str, result_row[0]);
-			if (db_query(conn_ptr, sql)){
-				cfs_log(ERR, "query update date error");
-			}
+            req_record->req_path = strdup(result_row[1]);
+            char now_date_str[32] = {0};
+            cfs_get_localtime(now_date_str);
+            flag = 0;// init flag for origin below
+            // update record start download date
+            sprintf(sql, "UPDATE %s SET start_date = '%s' WHERE id = %s", T_CDN_DOWN_QUEUE, now_date_str, result_row[0]);
+            if (db_query(conn_ptr, sql)){
+                cfs_log(ERR, "query update date error");
+            }
 
-			cfs_log(NOTICE, "now try to get resources from origin node...");
-			if (strlen(result_row[4]) > 0){
-				char *key = NULL;
-				char *val = NULL ;
-				cfs_split(result_row[4], ':', &key, &val);
-				if (val != NULL) {
-					req_record->req_host = key;
-					req_record->req_port = atoi(val);
-					cfs_free(val);
-				}else{
-					req_record->req_host = strdup(result_row[4]);
-					req_record->req_port = 80;
-				}
+            cfs_log(NOTICE, "now try to get resources from origin node...");
+            if (strlen(result_row[4]) > 0){
+                char *key = NULL;
+                char *val = NULL ;
+                cfs_split(result_row[4], ':', &key, &val);
+                if (val != NULL) {
+                    req_record->req_host = key;
+                    req_record->req_port = atoi(val);
+                    cfs_free(val);
+                }else{
+                    req_record->req_host = strdup(result_row[4]);
+                    req_record->req_port = 80;
+                }
 
-				req_record->req_path = strdup(result_row[5]);
-				req_record->is_hdfs  = 0;
-				flag = 1;
-			}else{
-				req_record->req_host = origin->host;
-				req_record->req_path = origin->api_download;
-				req_record->req_port = origin->port;
-				req_record->is_hdfs  = 1;
-			}
+                req_record->req_path = strdup(result_row[5]);
+                req_record->is_hdfs  = 0;
+                flag = 1;
+            }else{
+                req_record->req_host = origin->host;
+                req_record->req_path = origin->api_download;
+                req_record->req_port = origin->port;
+                req_record->is_hdfs  = 1;
+            }
 
-			req_record->is_update = atoi(result_row[3]);
+            req_record->is_update = atoi(result_row[3]);
 
-			cfs_http_header_t header = {0};
-			int nres = cfs_get_header(req_record, &header);
-			if (nres == 0){            
-				// printf("path=%s\nsize=%lld\nhost=%s\napi=%s\nupdate=%d\nhdfs=%d\nhhttp=%d\nhttp=%d\n", 
-				//     req_record->file_path, header.content_length, 
-				//     req_record->req_host, req_record->req_path, req_record->is_update, 
-				//     req_record->is_hdfs, header.hdfs_code, header.http_code);
+            cfs_http_header_t header = {0};
+            int nres = cfs_get_header(req_record, &header);
+            if (nres == 0){            
+                // printf("path=%s\nsize=%lld\nhost=%s\napi=%s\nupdate=%d\nhdfs=%d\nhhttp=%d\nhttp=%d\n", 
+                //     req_record->file_path, header.content_length, 
+                //     req_record->req_host, req_record->req_path, req_record->is_update, 
+                //     req_record->is_hdfs, header.hdfs_code, header.http_code);
 
-				if (((header.http_code == 200 || header.http_code == 206) && req_record->is_hdfs == 1 && header.hdfs_code == 1000) || 
-						((header.http_code == 200 || header.http_code == 206) && req_record->is_hdfs == 0)){
-					req_record->file_size = header.content_length;
-					// 
-					if (g_config->io_utilization == 0) {
-						cfs_download(req_record, g_config->work_dir);
-					}else{
-						cfs_disk_t *item = NULL;
-						nres = cfs_iostats(iostat_fd, disk, disk_len, &item);
-						if (nres == -1) {
-							cfs_log(ERR, "get iostat failed sleep 15s");
-							sleep(15);
-							goto end;
-						}
-						if (item == NULL) {
-							cfs_log(ERR, "get iostat failed item is null sleep 15s");
-							sleep(15);
-							goto end;
-						}else{
-							nres = 0;
-							nres = cfs_download(req_record, item->work);
-							if (nres == 0) {
-								sprintf(sql, "UPDATE %s SET disk_id = %d WHERE id = %s", T_CDN_DOWN_QUEUE, item->id, result_row[0]);
-								if (db_query(conn_ptr, sql)){
-									cfs_log(ERR, "query update date error");
-								}
-							}
-						}
-					}
-				}else{;
-					cfs_log(ERR, "Get %s %s is failed code %d hcode %d", req_record->req_path, req_record->file_path, header.http_code, header.hdfs_code);
-				}
-			}else{
-				cfs_log(WARN, "Connection %s:%d failed Get file path %s %s", req_record->req_host, req_record->req_port, req_record->req_path, req_record->file_path);
-			}
-cfs:
-			// delete file record mysql trigger insert to cdn_file_records table if disk_id > 0 
-			sprintf(sql, "DELETE FROM %s WHERE id = %s", T_CDN_DOWN_QUEUE, result_row[0]);
-			if (db_query(conn_ptr, sql)){
-				cfs_log(ERR, "query delete date error");
-			}
+                if (((header.http_code == 200 || header.http_code == 206) && req_record->is_hdfs == 1 && header.hdfs_code == 1000) || 
+                        ((header.http_code == 200 || header.http_code == 206) && req_record->is_hdfs == 0)){
+                    req_record->file_size = header.content_length;
+                    // 
+                    if (g_config->io_utilization == 0) {
+                        cfs_download(req_record, g_config->work_dir);
+                    }else{
+                        cfs_disk_t *item = NULL;
+                        nres = cfs_iostats(iostat_fd, disk, disk_len, &item);
+                        if (nres == -1) {
+                            cfs_log(ERR, "get iostat failed sleep 15s");
+                            sleep(15);
+                            goto end;
+                        }
+                        if (item == NULL) {
+                            cfs_log(ERR, "get iostat failed item is null sleep 15s");
+                            sleep(15);
+                            goto end;
+                        }else{
+                            nres = 0;
+                            nres = cfs_download(req_record, item->work);
+                            if (nres == 0) {
+                                sprintf(sql, "UPDATE %s SET disk_id = %d WHERE id = %s", T_CDN_DOWN_QUEUE, item->id, result_row[0]);
+                                if (db_query(conn_ptr, sql)){
+                                    cfs_log(ERR, "query update date error");
+                                }
+                            }
+                        }
+                    }
+                }else{;
+                    cfs_log(ERR, "Get %s %s is failed code %d hcode %d", req_record->req_path, req_record->file_path, header.http_code, header.hdfs_code);
+                }
+            }else{
+                cfs_log(WARN, "Connection %s:%d failed Get file path %s %s", req_record->req_host, req_record->req_port, req_record->req_path, req_record->file_path);
+            }
+            // delete file record mysql trigger insert to cdn_file_records table if disk_id > 0 
+            sprintf(sql, "DELETE FROM %s WHERE id = %s", T_CDN_DOWN_QUEUE, result_row[0]);
+            if (db_query(conn_ptr, sql)){
+                cfs_log(ERR, "query delete date error");
+            }
 end:
-			// clean req_record space
-			cfs_free(req_record->file_path);
-			if (flag == 1) {
-				cfs_free(req_record->req_host);
-				cfs_free(req_record->req_path);
-			}
-			// sleep(1);
-			// break;
-		}else{
-			cfs_log(NOTICE, "sleep 5 seconds");
-			sleep(5);
-		}
-		db_free_result(data_res);
-		if (g_quit == 1) {
-			cfs_log(NOTICE, "Exiting ...");
-			break;
-		}
-	}
+            // clean req_record space
+            cfs_free(req_record->file_path);
+            if (flag == 1) {
+                cfs_free(req_record->req_host);
+                cfs_free(req_record->req_path);
+            }
+            // sleep(1);
+            // break;
+        }else{
+            cfs_log(NOTICE, "sleep 5 seconds");
+            sleep(5);
+        }
+cfs:
+        db_free_result(data_res);
+        if (g_quit == 1) {
+            cfs_log(NOTICE, "Exiting ...");
+            break;
+        }
+    }
 
 clean:
-	// clean memory space
-	close(iostat_fd);
-	db_close(conn_ptr);
-	conn_ptr = NULL;
+    // clean memory space
+    close(iostat_fd);
+    db_close(conn_ptr);
+    conn_ptr = NULL;
 
-	int i;
-	for (i = 0; i < disk_len; ++i)
-	{
-		cfs_free(disk[i].work);
-		cfs_free(disk[i].device);
-	}
+    int i;
+    for (i = 0; i < disk_len; ++i)
+    {
+        cfs_free(disk[i].work);
+        cfs_free(disk[i].device);
+    }
 
-	cfs_free(disk);
+    cfs_free(disk);
 
-	cfs_free(g_user_agent);
+    cfs_free(g_user_agent);
 
-	cfs_free(req_record);
-	cfs_free(origin->api_download);
-	cfs_free(origin->host);
-	cfs_free(origin->password);
-	cfs_free(origin->username);
-	cfs_free(origin);
+    cfs_free(req_record);
+    cfs_free(origin->api_download);
+    cfs_free(origin->host);
+    cfs_free(origin->password);
+    cfs_free(origin->username);
+    cfs_free(origin);
 
-	cfs_cfsedge_config_t *ccc = g_config->cfsedge;
-	while(ccc != NULL)
-	{
-		cfs_cfsedge_config_t *cfsedge_tmp = ccc;
-		ccc = ccc->next;
+    cfs_cfsedge_config_t *ccc = g_config->cfsedge;
+    while(ccc != NULL)
+    {
+        cfs_cfsedge_config_t *cfsedge_tmp = ccc;
+        ccc = ccc->next;
 
-		cfs_free(cfsedge_tmp->host); // free cfsX nodes
-		cfs_free(cfsedge_tmp->key);
-		cfs_free(cfsedge_tmp);
-	}
+        cfs_free(cfsedge_tmp->host); // free cfsX nodes
+        cfs_free(cfsedge_tmp->key);
+        cfs_free(cfsedge_tmp);
+    }
 
-	cfs_free(mysql->host);
-	cfs_free(mysql->username);
-	cfs_free(mysql->password);
-	cfs_free(mysql->database);
-	cfs_free(mysql);
+    cfs_free(mysql->host);
+    cfs_free(mysql->username);
+    cfs_free(mysql->password);
+    cfs_free(mysql->database);
+    cfs_free(mysql);
 
-	cfs_free(g_config->groupname);
-	cfs_free(g_config->username);
-	cfs_free(g_config->log_path);
-	cfs_free(g_config->work_dir);
-	cfs_free(g_config);
-	pthread_mutex_destroy(&g_mutex_lock);
+    cfs_free(g_config->groupname);
+    cfs_free(g_config->username);
+    cfs_free(g_config->log_path);
+    cfs_free(g_config->work_dir);
+    cfs_free(g_config);
+    pthread_mutex_destroy(&g_mutex_lock);
 
-	return 0;
+    return 0;
 }
 
 // static void 
@@ -317,300 +322,241 @@ clean:
 //     }
 // }
 
-	static int 
+    static int 
 cfs_md5_encode(const unsigned char *str, size_t buff_len, char *result)
 {
-	unsigned char md[16];
-	char tmp[3] = {'\0'};
-	MD5(str, buff_len, md);
-	int i = 0;
-	for(i=0; i<16; i++)
-	{
-		sprintf(tmp, "%2.2x", md[i]);
-		strcat(result, tmp);
-	}
-	return 0;
+    unsigned char md[16];
+    char tmp[3] = {'\0'};
+    MD5(str, buff_len, md);
+    int i = 0;
+    for(i=0; i<16; i++)
+    {
+        sprintf(tmp, "%2.2x", md[i]);
+        strcat(result, tmp);
+    }
+    return 0;
 }
 
-	static int 
+    static int 
 cfs_mkrdir(char *path, mode_t mode)
 {
-	char *file_path = strdup(path);
-	if (file_path == NULL) {
-		return 0;
-	}
-	char dir_name[256] = {0};
-	char split[] = "/";
-	char *p = strtok(file_path, split);
+    char *file_path = strdup(path);
+    if (file_path == NULL) {
+        return 0;
+    }
+    char dir_name[256] = {0};
+    char split[] = "/";
+    char *p = strtok(file_path, split);
 
-	if (*file_path == '/') {
-		strcat(dir_name, split);
-	}
+    if (*file_path == '/') {
+        strcat(dir_name, split);
+    }
 
-	while(p!=NULL) {
-		strcat(dir_name, p);
-		strcat(dir_name, split);
-		if (access(dir_name, 0) != 0){	// dir not exists
-			if (mkdir(dir_name, mode) == -1){
-				return -1;
-				break;
-			}
-		}
-		p = strtok(NULL, split);
-	}
-	cfs_free(file_path);
-	return 0;
+    while(p!=NULL) {
+        strcat(dir_name, p);
+        strcat(dir_name, split);
+        if (access(dir_name, 0) != 0){	// dir not exists
+            if (mkdir(dir_name, mode) == -1){
+                return -1;
+                break;
+            }
+        }
+        p = strtok(NULL, split);
+    }
+    cfs_free(file_path);
+    return 0;
 }
 
-	static int
+    static int
 cfs_download(cfs_req_t *req_info, char *work_path)
 {
-	char *dir_buff                        = NULL;
-	char tmp_name[256]                    = {0};
-	char dir[256]                         = {0};
-	char *name_buff                       = NULL;
-	char *name                            = NULL;
-	char file_path[256]                   = {0};
-	int  is_exists                        = 0;
-	const unsigned long long package_size = g_config->package_size;
-	int len;
+    char *dir_buff                        = NULL;
+    char tmp_name[256]                    = {0};
+    char dir[256]                         = {0};
+    char *name_buff                       = NULL;
+    char *name                            = NULL;
+    char file_path[256]                   = {0};
+    int  is_exists                        = 0;
+    const unsigned long long package_size = g_config->package_size;
+    int len;
 
-	len = strlen(req_info->file_path);
-	long long nwrite = req_info->file_size;
+    len = strlen(req_info->file_path);
+    long long nwrite = req_info->file_size;
 
-	dir_buff = cfs_malloc(len + 1);
-	name_buff = cfs_malloc(len + 1);
+    dir_buff = cfs_malloc(len + 1);
+    name_buff = cfs_malloc(len + 1);
 
-	memcpy(dir_buff, req_info->file_path, len);
-	memcpy(name_buff, req_info->file_path, len);
+    memcpy(dir_buff, req_info->file_path, len);
+    memcpy(name_buff, req_info->file_path, len);
 
-	name = basename(name_buff);
+    name = basename(name_buff);
 
-	sprintf(dir, "%s%s", work_path, dirname(dir_buff));
-	sprintf(file_path, "%s/%s", dir, name);
+    sprintf(dir, "%s%s", work_path, dirname(dir_buff));
+    sprintf(file_path, "%s/%s", dir, name);
 
-	// file already exists
-	if (access(file_path, 0) == 0) {
-		is_exists = 1;
-		if (req_info->is_update == 0) {
-			cfs_log(NOTICE, "File is exist %s", file_path);
-			return 0;
-		}
-	}
+    // file already exists
+    if (access(file_path, 0) == 0) {
+        is_exists = 1;
+        if (req_info->is_update == 0) {
+            cfs_log(NOTICE, "File is exist %s", file_path);
+            return 0;
+        }
+    }
 
-	// 
-	if (access(dir, 0) != 0) {
-		if (cfs_mkrdir(dir, 0777) == -1) {
-			cfs_log(ERR, "mkdir %s failed: %s", dir, strerror(errno));
-			return -1;
-		}
-	}
+    // 
+    if (access(dir, 0) != 0) {
+        if (cfs_mkrdir(dir, 0777) == -1) {
+            cfs_log(ERR, "mkdir %s failed: %s", dir, strerror(errno));
+            return -1;
+        }
+    }
 
-	char md5_name[36] = {0};
-	cfs_md5_encode((unsigned char *)name, strlen(name), md5_name);
-	sprintf(tmp_name, "%s/%s", dir, md5_name);
+    char md5_name[36] = {0};
+    cfs_md5_encode((unsigned char *)name, strlen(name), md5_name);
+    sprintf(tmp_name, "%s/%s", dir, md5_name);
 
-	cfs_free(name_buff);
-	cfs_free(dir_buff);
+    cfs_free(name_buff);
+    cfs_free(dir_buff);
 
-	int nthread     = 0;
-	clock_t st      = clock();
-	time_t start    = time(0);
-	int i           = 0;
-	int max_threads = g_config->thread_size;
+    int nthread     = 0;
+    clock_t st      = clock();
+    time_t start    = time(0);
+    int i           = 0;
+    int max_threads = g_config->thread_size;
 
-	// add thread download resource
-	while (nwrite > 0){
+    // add thread download resource
+    while (nwrite > 0){
 
-		if (nthread >= max_threads) {
-			sleep(1);
-			continue;
-		}
+        if (nthread >= max_threads) {
+            sleep(1);
+            continue;
+        }
 
-		cfs_thread_arg_t *args = (cfs_thread_arg_t *)malloc(sizeof(cfs_thread_arg_t));
-		if (args == NULL){
-			return -1;
-		}
-		args->req = req_info;
-		args->offset = i * package_size;
-		args->limit = (i * package_size) + package_size - 1;
-		args->path = tmp_name;
-		args->nthread = &nthread;
+        cfs_thread_arg_t *args = (cfs_thread_arg_t *)malloc(sizeof(cfs_thread_arg_t));
+        if (args == NULL){
+            return -1;
+        }
+        args->req = req_info;
+        args->offset = i * package_size;
+        args->limit = (i * package_size) + package_size - 1;
+        args->path = tmp_name;
+        args->nthread = &nthread;
 
-		pthread_t pid;
-		int res = pthread_create(&pid, NULL, cfs_download_part, (void *)args);
-		if (res == 0){
-			pthread_mutex_lock(&g_mutex_lock);
-			if (nthread < max_threads)
-				nthread++;
-			pthread_mutex_unlock(&g_mutex_lock);
-		}
-		nwrite -= package_size;
-		i++;
-	}
+        pthread_t pid;
+        int res = pthread_create(&pid, NULL, cfs_download_part, (void *)args);
+        if (res == 0){
+            pthread_mutex_lock(&g_mutex_lock);
+            if (nthread < max_threads)
+                nthread++;
+            pthread_mutex_unlock(&g_mutex_lock);
+        }
+        nwrite -= package_size;
+        i++;
+    }
 
-	// wait thread all download done
-	while (!(nthread == 0)) {
-		if (req_info->file_size > (30 * 1024 * 1024)){
-			sleep(5);
-		}else if (req_info->file_size > (5 * 1024 * 1024)){
-			sleep(1);
-		}else{
-			usleep(250000);
-		}
-	}
+    // wait thread all download done
+    while (!(nthread == 0)) {
+        if (req_info->file_size > (30 * 1024 * 1024)){
+            sleep(5);
+        }else if (req_info->file_size > (5 * 1024 * 1024)){
+            sleep(1);
+        }else{
+            usleep(250000);
+        }
+    }
 
-	// download failed delete temp file
-	if (g_download_stat == 1){
-		if (req_info->is_hdfs == 1){
-			cfs_log(NOTICE, "download %s %s failed", req_info->req_host, req_info->file_path);
-		}else{
-			cfs_log(NOTICE, "download %s %s failed", req_info->req_host, req_info->req_path);
-		}
-		unlink(tmp_name);
-		return -1;
-	}
+    // download failed delete temp file
+    if (g_download_stat == 1){
+        if (req_info->is_hdfs == 1){
+            cfs_log(NOTICE, "download %s %s failed", req_info->req_host, req_info->file_path);
+        }else{
+            cfs_log(NOTICE, "download %s %s failed", req_info->req_host, req_info->req_path);
+        }
+        unlink(tmp_name);
+        return -1;
+    }
 
-	cfs_log(NOTICE, "write %s success %lld size %dus run time %ds", file_path, req_info->file_size, (unsigned int)(clock() - st), (unsigned int)(time(0) - start));
-	if (is_exists == 1 && req_info->is_update == 1) {
-		if (unlink(file_path)){
-			cfs_log(WARN, "Delete Old file %s failed: %s", file_path, strerror(errno));
-		}
-	}
+    cfs_log(NOTICE, "write %s success %lld size %dus run time %ds", file_path, req_info->file_size, (unsigned int)(clock() - st), (unsigned int)(time(0) - start));
+    if (is_exists == 1 && req_info->is_update == 1) {
+        if (unlink(file_path)){
+            cfs_log(WARN, "Delete Old file %s failed: %s", file_path, strerror(errno));
+        }
+    }
 
-	if (rename(tmp_name, file_path)){
-		cfs_log(WARN, "Rename %s to %s failed: %s", tmp_name, file_path, strerror(errno));
-		return -1;
-	}
+    if (rename(tmp_name, file_path)){
+        cfs_log(WARN, "Rename %s to %s failed: %s", tmp_name, file_path, strerror(errno));
+        return -1;
+    }
 
-	return 0;
+    return 0;
 }
 
-	static int
+    static int
 my_cfs_download(my_req_t *req_info)
 {
-	//char tmp_name[256]                    = {0};
-	//char file_path[256]                   = {0};
-	//const unsigned long long package_size = g_config->package_size;
+    long long nwrite = req_info->file_size;
 
-	long long nwrite = req_info->file_size;
+    // file already exists
+    if (access(req_info->req_file_path, 0) == 0) {
+        cfs_log(NOTICE, "File is exist %s", req_info->req_file_path);
+        printf("File is exist %s\n", req_info->req_file_path);
+        return 0;
+    }
 
-	// file already exists
-	if (access(req_info->req_file_path, 0) == 0) {
-		cfs_log(NOTICE, "File is exist %s", req_info->req_file_path);
-		return 0;
-	}
+    int sock = cfs_socket_init(req_info->req_host, req_info->req_port);
+    if (sock < 0){
+        printf("sock init error\n"); 
+        return -1;
+    }
 
-//	if (access(dir, 0) != 0) {
-//		if (cfs_mkrdir(dir, 0777) == -1) {
-//			cfs_log(ERR, "mkdir %s failed: %s", dir, strerror(errno));
-//			return -1;
-//		}
-//	}
-
-	//int nthread     = 0;
-	//int i           = 0;
-	//int max_threads = g_config->thread_size;
-
-	int sock = cfs_socket_init(req_info->req_host, req_info->req_port);
-	if (sock < 0){
-		return -1;
-	}
-
-	send_struct_t sst;
-	sst.file_exist_flag = 0;
-	sst.file_size = 0;
-	strcpy(sst.file_path,req_info->req_file_path);
-	cfs_writen(sock, &sst, sizeof(sst));
-	memset(&sst, 0, sizeof(sst));
-	int rnd = cfs_readn(sock,(void*)&sst,sizeof(sst));
-	if(rnd != sizeof(sst))
-	{
-		printf("error.\n");
+    send_struct_t sst;
+    sst.file_exist_flag = 0;
+    sst.file_size = 0;
+    strcpy(sst.file_path,req_info->req_file_path);
+    printf("%d,sizoef(sst)=%lu\n",__LINE__,sizeof(sst));
+    int wnd = cfs_writen(sock, &sst, sizeof(sst));
+    printf("%d,writen size =%u\n",__LINE__,wnd);
+    memset(&sst, 0, sizeof(sst));
+    int rnd = cfs_readn(sock,(void*)&sst,sizeof(sst));
+    if(rnd != sizeof(sst))
+    {
+        printf("error.,rnd=%d\n",rnd);
         close(sock);
-		return -1;
-	}
-	if(sst.file_exist_flag != 1 || sst.file_size == 0)
-	{
-		printf("file not exist or file size is 0\n");
+        return -1;
+    }
+    if(sst.file_exist_flag != 1 || sst.file_size == 0)
+    {
+        printf("sst.file_exist_flag = %d\n sst.file_size = %llu\n", sst.file_exist_flag, sst.file_size);
+        printf("file not exist or file size is 0\n");
         close(sock);
-		return -1;
-	}
-//	close(sock);
+        return -1;
+    }
 
-	nwrite = sst.file_size ;
+    nwrite = sst.file_size ;
 
     int fd = open(sst.file_path, O_CREAT|O_WRONLY, 0755);
     int nres;
-    char recv_buff[2048]={0};
-    while((nres = cfs_readn(sock, recv_buff, 4096)) != 0) 
+    char recv_buff[4096]={0};
+    printf("while :read from nodecfs data\n");
+    while((nres = cfs_readn(sock, recv_buff, sizeof(recv_buff))) != 0) 
     {    
         // write buff to file
-        cfs_writen(fd, recv_buff, nres);
+        printf("read data from node cfs size nres = %d\n",nres);
+        wnd = cfs_writen(fd, recv_buff, nres);
+        printf("write to files data size wnd= %d\n",wnd);
         nwrite -= nres;
     } 
     if(nwrite > 0)
     {
         printf("get data error.\n");
     }
+    else
+    {
+        printf("get data ok.\n");
+    }
 
     close(fd);
     close(sock);
-
-    // add thread download resource
-    //	while (nwrite > 0){
-    //
-    //		if (nthread >= max_threads) {
-    //            sleep(1);
-    //            continue;
-    //        }
-    //
-    //        my_thread_arg_t *args = (my_thread_arg_t *)malloc(sizeof(my_thread_arg_t));
-    //        if (args == NULL){
-    //            return -1;
-    //        }
-    //        args->req = req_info;
-    //        args->offset = i * package_size;
-    //        args->limit = (i * package_size) + package_size - 1;
-    //        args->path = strdup(sst.file_path);
-    //        args->nthread = &nthread;
-    //
-    //        pthread_t pid;
-    //        int res = pthread_create(&pid, NULL, my_cfs_download_part, (void *)args);
-    //        if (res == 0){
-    //            pthread_mutex_lock(&g_mutex_lock);
-    //            if (nthread < max_threads)
-    //                nthread++;
-    //            pthread_mutex_unlock(&g_mutex_lock);
-    //        }
-    //        nwrite -= package_size;
-    //        i++;
-    //    }
-    //
-    //    // wait thread all download done
-    //    while (!(nthread == 0)) {
-    //        if (req_info->file_size > (30 * 1024 * 1024)){
-    //            sleep(5);
-    //        }else if (req_info->file_size > (5 * 1024 * 1024)){
-    //            sleep(1);
-    //        }else{
-    //            usleep(250000);
-    //        }
-    //    }
-    //
-    //    // download failed delete temp file
-    //    if (g_download_stat == 1){
-    //        cfs_log(NOTICE, "download %s %s failed", req_info->req_host, req_info->req_file_path);
-    //        unlink(tmp_name);
-    //        return -1;
-    //    }
-    //
-    //    cfs_log(NOTICE, "write %s success %lld size", file_path, req_info->file_size);
-    //
-    //    if (rename(tmp_name, file_path)){
-    //        cfs_log(WARN, "Rename %s to %s failed: %s", tmp_name, file_path, strerror(errno));
-    //        return -1;
-    //    }
 
     return 0;
 }
@@ -685,27 +631,6 @@ cfs_exit_download(cfs_thread_arg_t *args, void *body_buff, int code)
     pthread_exit(0);
 }
 
-//    static void
-//my_cfs_exit_download(my_thread_arg_t *args, void *body_buff)
-//{
-//    pthread_mutex_lock(&g_mutex_lock);
-//    int thread = *args->nthread;
-//    if (thread > 0){
-//        *args->nthread = --thread;
-//    }
-//    pthread_mutex_unlock(&g_mutex_lock);
-//
-//    if (args != NULL) {
-//        free(args); 
-//        args = NULL;   
-//    }
-//
-//    if (body_buff != NULL) {
-//        free(body_buff); 
-//        body_buff = NULL;   
-//    }
-//    pthread_exit(0);
-//}
 
     static void *
 cfs_download_part(void *params)
@@ -943,75 +868,6 @@ clean:
     return (void *)0;
 }
 
-//    static void *
-//my_cfs_download_part(void *params)
-//{
-//    my_thread_arg_t *args  = (my_thread_arg_t *)params;
-//    file_part_t    *filep;
-//    void   *recv_buff       = NULL;
-//    int     nres;
-//
-//    filep = (file_part_t*)malloc(sizeof(file_part_t));
-//    if (filep == NULL) {
-//        my_cfs_exit_download(args, NULL);
-//        return (void *)0;
-//    }
-//    memset(filep, 0, sizeof(file_part_t));
-//
-//    recv_buff = (void *)malloc(4096);
-//    if (recv_buff == NULL) {
-//        my_cfs_exit_download(args, NULL);
-//        return (void *)0;
-//    }
-//    memset(recv_buff, 0, 4096);
-//
-//    int sock = cfs_socket_init(args->req->req_host, args->req->req_port);
-//    if (sock < 0) {
-//        if (filep != NULL) {
-//            free(filep);
-//            filep = NULL;
-//        }
-//        pthread_mutex_lock(&g_mutex_lock);
-//        g_download_stat = 1;
-//        pthread_mutex_unlock(&g_mutex_lock);
-//        goto clean;
-//    }
-//
-//    strcpy(filep->pathname, args->req->req_file_path);
-//    filep->offset = args->offset;
-//    filep->limit = args->limit;
-//
-//    // write socket http request
-//    cfs_writen(sock, filep, sizeof(*filep));
-//    if (filep != NULL) {
-//        free(filep);
-//        filep= NULL;
-//    }
-//
-//    int fd = open(args->path, O_CREAT|O_WRONLY, 0755);
-//    if (fd == -1) {
-//        pthread_mutex_lock(&g_mutex_lock);
-//        g_download_stat = 1;
-//        pthread_mutex_unlock(&g_mutex_lock);
-//        goto clean;
-//    }
-//    lseek(fd, args->offset, SEEK_SET);
-//    while((nres = cfs_readn(sock, recv_buff, 4096)) != 0) 
-//    {
-//        // write buff to file
-//        cfs_writen(fd, recv_buff, nres);
-//    }
-//
-//clean:
-//    close(fd);
-//    close(sock);
-//    if (recv_buff != NULL) {
-//        free(recv_buff);
-//        recv_buff = NULL;
-//    }
-//    my_cfs_exit_download(args, NULL);
-//    return (void *)0;
-//}
     static int
 cfs_get_header(cfs_req_t *req, cfs_http_header_t *header)
 {
@@ -1158,121 +1014,6 @@ cfs_get_header(cfs_req_t *req, cfs_http_header_t *header)
     return 0;
 }
 
-//
-//	static int
-//my_cfs_get_header(cfs_req_t *req, cfs_http_header_t *header)
-//{
-//	int     nres;
-//	char   *pos, *epos;
-//	char    tmp[256]     = {0};
-//	char   *head_buff    = NULL;
-//	char   *rh           = NULL;
-//	char    buff[32]     = {0};
-//	const char *split    = "\r\n\r\n";
-//
-//	rh = (char *)cfs_malloc(1024);
-//	head_buff = (char *)cfs_malloc(1024);
-//
-//	int sock = cfs_socket_init(req->req_host, req->req_port);
-//	if (sock < 0){
-//		printf("%d:cfs_socekt_init <0\n",__LINE__);
-//		return -1;
-//	}
-//
-//	sprintf(tmp, "HEAD %s HTTP/1.1\r\n", req->req_path);
-//	strcat(rh, tmp);
-//	sprintf(tmp, "Host: %s:%d\r\n", req->req_host, req->req_port);
-//	strcat(rh, tmp);
-//	sprintf(tmp, "Accept: */*\r\n");
-//	strcat(rh, tmp);
-//	sprintf(tmp, "User-Agent: %s\r\n", g_user_agent);
-//	strcat(rh, tmp);
-//	sprintf(tmp, "Accept-Language: zh-CN,zh;q=0.8\r\n");
-//	strcat(rh, tmp);
-//	sprintf(tmp, "Accept-Encoding: gzip,deflate,sdch\r\n");
-//	strcat(rh, tmp);
-//	//    sprintf(tmp, "key: %s\r\n", req->file_path);
-//	//   strcat(rh, tmp);
-//	sprintf(tmp, "Connection: close\r\n\r\n");
-//	strcat(rh, tmp);
-//
-//	cfs_writen(sock, rh, strlen(rh));
-//	printf("send HEAD http dataes:\n%s\n",rh);
-//	cfs_free(rh);
-//
-//	while((nres = cfs_readn(sock, head_buff, 1024)) != 0){
-//		char *idx = strstr((char *)head_buff, split);
-//
-//		if (idx != NULL) {
-//			pos = strstr(head_buff, "HTTP/1.1");
-//			if (pos == NULL) {
-//				pos = strstr(head_buff, "HTTP/1.0");
-//			}
-//			if (pos != NULL){
-//				pos = strchr(pos, ' ');
-//				if (pos != NULL){
-//					pos++;
-//					header->http_code = atoi(pos);
-//				}
-//			}
-//
-//			pos = strcasestr(head_buff, "Content-Type:");
-//			if (pos != NULL){
-//				pos = strchr(pos, ':');
-//				if (pos != NULL){
-//					pos++;
-//					epos = strcasestr(pos, "\r\n");
-//					if (epos != NULL){
-//						memset(buff, 0, sizeof(buff));
-//						strncpy(buff, pos, epos-pos);
-//						if (buff[0] == ' ')
-//							strcpy(header->content_type, &buff[1]);
-//						else
-//							strcpy(header->content_type, &buff[0]);
-//					}
-//				}
-//			}
-//
-//			pos = strcasestr(head_buff, "Server:");
-//			if (pos != NULL){
-//				pos = strchr(pos, ':');
-//				if (pos != NULL){
-//					pos++;
-//					epos = strcasestr(pos, "\r\n");
-//					if (epos != NULL){
-//						memset(buff, 0, sizeof(buff));
-//						strncpy(buff, pos, epos-pos);
-//						if (buff[0] == ' ')
-//							strcpy(header->server, &buff[1]);
-//						else
-//							strcpy(header->server, &buff[0]);
-//					}
-//				}
-//			}
-//
-//			pos = strcasestr(head_buff, "Content-Length:");
-//			if (pos != NULL){
-//				pos = strchr(pos, ':');
-//				if (pos != NULL){
-//					pos++;
-//					long long length = atoll(pos);
-//					header->content_length = length;
-//				}
-//			}
-//
-//			pos = strcasestr(head_buff, "Accept-Ranges:");
-//			if (pos != NULL){
-//				header->accept_ranges = 1;
-//			}
-//		}
-//	}
-//
-//	cfs_free(head_buff);
-//	close(sock);
-//
-//	return 0;
-//}
-//
     static int
 cfs_socket_init(const char *req_host, const short port)
 {
@@ -1904,7 +1645,6 @@ void* cfs_server_run()
 {
     int sockfd;
     int err;
-    //int i;
     int connfd;
 
     struct sockaddr_in serv_addr;   //服务器地址
@@ -1917,7 +1657,7 @@ void* cfs_server_run()
         exit(-1);
     }
     cfs_log(NOTICE, "cfs server socket ok.");
-
+    printf("cfs server socket ok.\n");
     memset(&serv_addr, 0, sizeof(serv_addr));
     memset(&cli_addr, 0, sizeof(cli_addr));
 
@@ -1933,6 +1673,7 @@ void* cfs_server_run()
         exit(-1);
     }
     cfs_log(NOTICE, "cfs server bind ok.");
+    printf( "cfs server bind ok.\n");
 
     err = listen(sockfd, LISTEN_NUMS);
     if(err < 0)
@@ -1941,15 +1682,19 @@ void* cfs_server_run()
         exit(-1);
     }
     cfs_log(NOTICE, "cfs server listen ok.");
+    printf("cfs server listen ok.\n");
+    cli_len = sizeof(cli_addr);
     while(1)
     {
         connfd = accept(sockfd, (struct sockaddr *)&cli_addr, &cli_len);
         if(connfd < 0)
         {
             cfs_log(ERR, "fail to accept");
+            close(sockfd);
             exit(-1);
         }
         cfs_log(NOTICE, "cfs server accept a new client.");
+        printf("cfs server accept a new client.,fd=%d\n",connfd);
         pid_t child=fork();   
         if(child==0)   
         {      
@@ -1960,7 +1705,6 @@ void* cfs_server_run()
         }   
         close(connfd);  
     }
-    exit(0);
 }
 
 static int do_send_file(int sockfd)
@@ -1973,183 +1717,72 @@ static int do_send_file(int sockfd)
     send_struct_t *sst_tmp;
 
     char *rdbuf = (char*)malloc(sizeof(send_struct_t));
-    int rnd = cfs_readn(sockfd,rdbuf,sizeof(send_struct_t));
 
-    if(rnd != sizeof(sizeof(send_struct_t)))
+    memset(rdbuf, 0, sizeof(send_struct_t));
+    int rnd = cfs_readn(sockfd,rdbuf,sizeof(send_struct_t));
+    int wnd = 0;
+    if(rnd != sizeof(send_struct_t))
     {
+        printf("%d,%d !=recve\n",__LINE__,rnd);
         sst_tmp = (send_struct_t*)rdbuf;
         sst_tmp->file_exist_flag = 0;
         sst_tmp->file_size = 0; 
-        cfs_writen(sockfd, (char*)sst_tmp, sizeof(send_struct_t));
-
+        wnd = cfs_writen(sockfd, (char*)sst_tmp, sizeof(send_struct_t));
+        printf("%d,write struct size=%d, sst_tmp->file_size=%llu, sst_tmp->file_exist_flag= %d\n",__LINE__,wnd, sst_tmp->file_size, sst_tmp->file_exist_flag);
         return -1;
     }
     else
     {
+        printf("%d,%d ==write\n",__LINE__,rnd);
         sst_tmp = (send_struct_t*)rdbuf;
-        if(access(sst_tmp->file_path, 0))
+        if(0 == access(sst_tmp->file_path, 0))
         {
             sst_tmp->file_exist_flag = 1;
         }
         sst_tmp->file_size = get_file_size(sst_tmp->file_path);
         data_size = sst_tmp->file_size;
-        cfs_writen(sockfd, (char*)sst_tmp, sizeof(send_struct_t));
+        wnd = cfs_writen(sockfd, (char*)sst_tmp, sizeof(send_struct_t));
+        printf("%d,write struct size=%d, sst_tmp->file_size=%llu, sst_tmp->file_exist_flag= %d\n",__LINE__,wnd, sst_tmp->file_size, sst_tmp->file_exist_flag);
+        if(sst_tmp->file_exist_flag == 0)
+        {
+            free(rdbuf);
+            return 0;
+        }
     }
 
     filep = fopen(sst_tmp->file_path,"r");
+    if(NULL == filep)
+    {
+
+        printf("file_path,%s:NULL == filep\n",sst_tmp->file_path);
+    }
+    else
+    {
+        printf("file_path,%s:NULL != filep\n",sst_tmp->file_path);
+    }
+    ulres = 0;
     while(ulres < data_size)  // send request files 
     {
-        if((data_rds = fread(rw_buf, sizeof(rw_buf), 1, filep)) == -1)
+        if((data_rds = fread(rw_buf, 1,sizeof(rw_buf), filep)) == -1)
         {
             cfs_log(ERR, "read file error");
         }
-        ulres = ulres + data_rds;
-
-        cfs_writen(sockfd, rw_buf, data_rds);
+        if(data_rds == 0)
+        {
+            sleep(3);
+            break;
+        }
+        printf("%d,fread data size=%lu\n",__LINE__,data_rds);
+        wnd = cfs_writen(sockfd, rw_buf, data_rds);
+        printf("%d,writen data size=%d\n",__LINE__,wnd);
     }
-
+    printf("send data end.\n");
     fclose(filep);
     free(rdbuf);
 
     return 0;
 }
 
-//static int http_cmd_head(int sock, char *buf)
-//{
-//    char   *pos, *epos;
-//    char    tmp[256]     = {0};
-//    char   *rh           = NULL;
-//    char    file_path[256]={0};
-//    const char *split    = "\r\n\r\n";
-//    rh = (char *)cfs_malloc(1024);
-//
-//    if( buf != NULL)
-//    {
-//        char *idx = strstr(buf, split);
-//        if (idx != NULL) {
-//            pos = strstr(buf, "HEAD");
-//            if(pos != NULL)
-//            {
-//                pos++;
-//            }
-//            epos = strchr(pos, ' ');
-//            if (epos != NULL){
-//                strncpy(file_path, pos, epos-pos);
-//                file_path[epos-pos] = '\0';
-//            }
-//        }
-//    }
-//
-//    int file_size = 0;
-//    int flag = access(file_path, R_OK); // -1:not exist; 0:exist
-//    printf("client cfs request file_path=%s\n",file_path);
-//    if(-1 == flag)
-//    {
-//        sprintf(rh, "HTTP/1.1 404 Not Found\r\n");
-//    }
-//    else
-//    {
-//        file_size = get_file_size(file_path);
-//        sprintf(rh, "HTTP/1.1 200 OK\r\n");
-//    }
-//
-//    sprintf(tmp, "Server: cfs server\r\n");
-//    strcat(rh, tmp);
-//    sprintf(tmp, "Accept-Range: bytes\r\n");
-//    strcat(rh, tmp);
-//    sprintf(tmp, "Content-Length: %d\r\n", file_size);
-//    strcat(rh, tmp);
-//    sprintf(tmp, "Connection: close\r\n\r\n");
-//    strcat(rh, tmp);
-//
-//    cfs_writen(sock, rh, strlen(rh));
-//    cfs_free(rh);
-//    return 0;
-//}
-
-//static int http_cmd_get(int sock, char *buf)
-//{
-//    int     nres;
-//    char   *pos, *epos;
-//    char    tmp[256]     = {0};
-//    char   *head_buff    = NULL;
-//    char   *rh           = NULL;
-//    const char *split    = "\r\n\r\n";
-//
-//    rh = (char *)cfs_malloc(1024);
-//    head_buff = (char *)cfs_malloc(1024);
-//
-//    while((nres = cfs_readn(sock, head_buff, 1024)) != 0)
-//    {
-//        char *idx = strstr((char *)head_buff, split);
-//        if (idx != NULL) {
-//            pos = strstr(head_buff, "GET");
-//            if(pos != NULL)
-//            {
-//                pos++;
-//            }
-//            epos = strchr(pos, ' ');
-//            if (epos != NULL){
-//                strncpy(header->file_path, pos, epos-pos);
-//            }
-//
-//            pos = strcasestr(head_buff, "Range:");
-//            if (pos != NULL){
-//                //		header->accept_ranges = 1; //TODO:
-//            }
-//        }
-//    }
-//
-//    FILE *filep = fopen(header->file_path, "r");
-//    if(NULL == filep)
-//    {
-//        cfs_log(ERR, "fopen %s error", header->file_path);
-//        exit(-1);
-//    }
-//
-//    char rw_buf[1024]={0};
-//    char *prw;
-//    unsigned long data_size = get_file_size(header->file_path);
-//    unsigned long ulres = 0;
-//    unsigned long data_rds = 0;
-//    while(ulres < data_size)  // send request files 
-//    {
-//        sprintf(tmp, "HTTP/1.1 200 OK\r\n");
-//        strcat(rh, tmp);
-//        sprintf(tmp, "Server: cfs server\r\n");
-//        strcat(rh, tmp);
-//        sprintf(tmp, "Content-Type: text/html\r\n");
-//        strcat(rh, tmp);
-//        sprintf(tmp, "Accept-Range: bytes\r\n");
-//        strcat(rh, tmp);
-//
-//        prw = rh + strlen(rh);	
-//        if((data_rds = fread(rw_buf, sizeof(rh) - strlen(rh), 1, filep)) == -1)
-//        {
-//            cfs_log(ERR, "read file error");
-//        }
-//        sprintf(tmp, "Content-length: %lu\r\n",data_rds);
-//        strcat(rh, tmp); 
-//
-//        ulres = ulres + data_rds;
-//        if(ulres >= data_size)
-//        {
-//            sprintf(tmp, "Connection: close\r\n\r\n");
-//        }
-//        else
-//        {
-//            sprintf(tmp, "Connection: Keep-Alive\r\n\r\n");
-//        }
-//        strcat(rh, tmp);
-//
-//        strncpy(prw, rw_buf, data_rds);
-//        cfs_writen(sock, rh, strlen(rh));
-//    }
-//    cfs_free(head_buff);
-//    cfs_free(rh);
-//
-//    return 0;
-//}
 
 static unsigned long get_file_size(const char *path)
 {
