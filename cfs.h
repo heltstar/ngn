@@ -17,11 +17,11 @@ enum {ERR, WARN, NOTICE};
 // added for cfs download 
 typedef struct file_part
 {
-	int file_part_id; //  
+//	int file_part_id; //  
 	int flag;      //record if this part is download ok:0--failed or not be download; 1--ok
 	char pathname[256];
 	long int offset;
-	long int limit;
+	long int data_size;
 //	struct file_part *next;
 }file_part_t;
 
@@ -49,7 +49,7 @@ typedef struct send_struct
 	char file_path[256];
 	long long file_size;
     long int  offset;
-    long int limit;
+    long int data_size;
 }send_struct_t;
 
 typedef struct cfs_http_header {
@@ -71,10 +71,10 @@ typedef struct cfs_thread_arg {
 } cfs_thread_arg_t;
 
 typedef struct my_thread_arg { //test ...
-	int         *nthread; // not used
+//	int         *nthread; // not used
     file_part_t fpt;
     cfs_node_record_t  cnrt;
-	int          fd; //not used
+//	int          fd; //not used
 } my_cfs_thread_arg_t;
 
 typedef struct cfs_origin_config {

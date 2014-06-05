@@ -68,7 +68,6 @@ int main(int argc, char **argv)
 
     // connect mysql
     MYSQL *conn_ptr = NULL;
-
     conn_ptr = db_connect(mysql->host, mysql->username, mysql->password, mysql->database, mysql->port);
     if (conn_ptr == NULL){
         cfs_log(ERR, "connect mysql Access denied!");
@@ -125,7 +124,6 @@ int main(int argc, char **argv)
 				cfs_log(ERR, "query update date error");
 			}
 
-			cfs_log(NOTICE, "now try to get resources from origin node...");
 			if (strlen(result_row[4]) > 0){
 				char *key = NULL;
 				char *val = NULL ;
@@ -475,8 +473,11 @@ my_cfs_download(cfs_cfsedge_config_t *pccc, char *file_path, long long file_size
     int i = 0;
     long package_nums;
     long long  pkg_size = g_config->package_size * 1024;
+    char local_file_path[256] = {0};
+
+    sprintf(local_file_path,"%s%s", g_config->work_dir, file_path);
     // file already exists
-    if (access(file_path, 0) == 0) {
+    if (access(local_file_path, 0) == 0) {
         cfs_log(NOTICE, "File is exist %s", file_path);
         printf("File is exist %s\n", file_path);
         return 0;
@@ -500,17 +501,17 @@ my_cfs_download(cfs_cfsedge_config_t *pccc, char *file_path, long long file_size
     memset(fpt, 0, package_nums * sizeof(file_part_t));
     for(i=0; i< package_nums; i++)
     {
-        fpt[i].file_part_id = i; //  
+        //fpt[i].file_part_id = i; //  
         fpt[i].flag = 0;      
         strcpy(fpt[i].pathname, file_path);
         fpt[i].offset = i * pkg_size;
         if((fpt[i].offset +  pkg_size) <=  file_size)
         {
-            fpt[i].limit = fpt[i].offset + pkg_size - 1;
+            fpt[i].data_size = pkg_size;
         }
         else
         {
-            fpt[i].limit = file_size % pkg_size ;
+            fpt[i].data_size = file_size % pkg_size ;
         }
     }
 
@@ -929,7 +930,7 @@ my_cfs_download_part(void *params)
     sst.file_size = 0;
     strcpy(sst.file_path,args->cnrt.file_path);
     sst.offset = args->fpt.offset;
-    sst.limit = args->fpt.limit;
+    sst.data_size = args->fpt.data_size;
     printf("%d,sizoef(sst)=%lu\n",__LINE__,sizeof(sst));
 
     wnd = cfs_writen(sock, &sst, sizeof(sst));
@@ -951,7 +952,7 @@ my_cfs_download_part(void *params)
         return (void*)-1;
     }
 
-    nwrite = args->fpt.limit - args->fpt.offset + 1; // the data will be send
+    nwrite = args->fpt.data_size; // the data will be send
 
     fd = open(sst.file_path, O_CREAT|O_WRONLY, 0755);
     printf("while :read from nodecfs data\n");
@@ -1881,7 +1882,7 @@ static int do_send_file(int sockfd)
         }
     }
 
-    data_size = sst_tmp.limit; //limit is size of the data wanted
+    data_size = sst_tmp.data_size; //limit is size of the data wanted
     filep = fopen(req_file_path,"r");
     if(NULL == filep)
     {
