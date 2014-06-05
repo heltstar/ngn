@@ -43,13 +43,6 @@ typedef struct cfs_req {
 	long long   file_size;
 } cfs_req_t;
 
-typedef struct my_req {    // test .....
-	short       req_port;
-	char        *req_host;
-	char        *req_file_path;
-	long long   file_size;
-} my_req_t;
-
 typedef struct send_struct
 {    
 	int file_exist_flag;
