@@ -14,115 +14,120 @@ do \
 
 enum {ERR, WARN, NOTICE};
 
-typedef struct cfs_req {
-    short       req_port;
-    int         is_update;
-    int         is_hdfs;
-    char        *file_path;
-    char        *req_host;
-    char        *req_path;
-    long long   file_size;
-} cfs_req_t;
+// added for cfs download 
+typedef struct file_part
+{
+//	int file_part_id; //  
+	int flag;      //record if this part is download ok:0--failed or not be download; 1--ok
+	char pathname[256];
+	long int offset;
+	long int data_size;
+//	struct file_part *next;
+}file_part_t;
 
-typedef struct my_req {    // test .....
-    short       req_port;
-    char        *req_host;
-    char        *req_file_path;
-    long long   file_size;
-} my_req_t;
+typedef struct cfs_node_record //record if the cfsnode host:port has file_path[256],flag--0,not exist;flag--1,exist.
+{
+    char host[256];
+    short  port;
+    char file_path[256];
+    int flag;
+}cfs_node_record_t;
+
+typedef struct cfs_req {
+	short       req_port;
+	int         is_update;
+	int         is_hdfs;
+	char        *file_path;
+	char        *req_host;
+	char        *req_path;
+	long long   file_size;
+} cfs_req_t;
 
 typedef struct send_struct
 {    
-    int file_exist_flag;
-    char file_path[256];
-    long long file_size;
+	int file_exist_flag;
+	char file_path[256];
+	long long file_size;
+    long int  offset;
+    long int data_size;
 }send_struct_t;
 
 typedef struct cfs_http_header {
-    short       accept_ranges;
-    short       http_code;
-    short       hdfs_code;
-    long long   content_length;
-    char        content_type[32];
-    char        server[32];
+	short       accept_ranges;
+	short       http_code;
+	short       hdfs_code;
+	long long   content_length;
+	char        content_type[32];
+	char        server[32];
 } cfs_http_header_t;
 
 typedef struct cfs_thread_arg {
-    int         *nthread;
-    char        *path;
-    cfs_req_t   *req;
-    int          fd;
-    long long    offset;
-    long long    limit;
+	int         *nthread;
+	char        *path;
+	cfs_req_t   *req;
+	int          fd;
+	long long    offset;
+	long long    limit;
 } cfs_thread_arg_t;
 
 typedef struct my_thread_arg { //test ...
-    int         *nthread;
-    char        *path;
-    my_req_t   *req;
-    int          fd;
-    long long    offset;
-    long long    limit;
-} my_thread_arg_t;
+//	int         *nthread; // not used
+    file_part_t fpt;
+    cfs_node_record_t  cnrt;
+//	int          fd; //not used
+} my_cfs_thread_arg_t;
 
 typedef struct cfs_origin_config {
-    short    port;
-    char     rate[8];
-    char     cache[8];
-    char     *host;
-    char     ip[32];
-    char     *username;
-    char     *password;
-    char     *api_download;
+	short    port;
+	char     rate[8];
+	char     cache[8];
+	char     *host;
+	char     ip[32];
+	char     *username;
+	char     *password;
+	char     *api_download;
 } cfs_origin_config_t;
 
 typedef struct cfs_mysql_config {
-    short    port;
-    char     *host;
-    char     *username;
-    char     *password;
-    char     *database;
+	short    port;
+	char     *host;
+	char     *username;
+	char     *password;
+	char     *database;
 } cfs_mysql_config_t;
 
 /*added for cfs download*/
 typedef struct cfs_cfsedge_config {
-    char    *host;
-    short   port;
-    char	*key;
-    struct cfs_cfsedge_config *next;
+	char    *host;
+	short   port;
+	char	*key;
+	struct cfs_cfsedge_config *next;
 }cfs_cfsedge_config_t;
 
-// added for cfs download 
-typedef struct file_part
-{
-    char pathname[256];
-    long int offset;
-    long int limit;
-}file_part_t;
-
 typedef struct cfs_config {
-    unsigned short          io_utilization;
-    unsigned short          io_port;
-    unsigned short          server_port; //added for cfs download
-    unsigned int            thread_size;
-    cfs_origin_config_t     *origin;
-    cfs_mysql_config_t      *mysql;
-    cfs_cfsedge_config_t    *cfsedge;  //added for cfs download
-    char                    *username;
-    char                    *groupname;
-    long long               log_size;
-    long long               package_size;
-    char                    *log_path;
-    char                    *work_dir;
-    char                    io_host[32];
-    char                    app_name[64];
+	unsigned short          io_utilization;
+	unsigned short          io_port;
+	unsigned short          server_port; //added for cfs download
+	unsigned int            thread_size;
+	cfs_origin_config_t     *origin;
+	cfs_mysql_config_t      *mysql;
+	cfs_cfsedge_config_t    *cfsedge;  //added for cfs download
+    int                      cfsedge_nums;  // cfsedge numbers
+	char                    *username;
+	char                    *groupname;
+	long long               log_size;
+	long long               package_size;
+	char                    *log_path;
+	char                    *work_dir;
+	char                    io_host[32];
+	char                    app_name[64];
 } cfs_config_t;
 
 typedef struct cfs_disk {
-    unsigned short  priority;
-    unsigned int    id;
-    char           *device;
-    char           *work;
+	unsigned short  priority;
+	unsigned int    id;
+	char           *device;
+	char           *work;
 } cfs_disk_t;
 
 static int      cfs_md5_encode (const unsigned char *str, size_t buff_len, char *result);
@@ -133,16 +138,18 @@ static int      cfs_preg_match (char pattern[], char str[]);
 static int      cfs_get_localtime (char *date_str);
 //     static void     cfs_clear_space (const char *str, char *dest);
 static int      cfs_download (cfs_req_t *req_info, char *work_path);
-static int      my_cfs_download (my_req_t *req_info);
+static int      my_cfs_download (cfs_cfsedge_config_t *pccc, char *file_path, long long file_size);
 
 static int      cfs_mkrdir (char *file_path, mode_t mode);
 static void*    cfs_download_part (void *params);
+static void*    my_cfs_download_part (void *params);
 
 static ssize_t  cfs_writen (const int sock, void *data, size_t length);
 static ssize_t  cfs_readn (const int fd, void *buf, size_t length);
 static int      cfs_get_header (cfs_req_t *req, cfs_http_header_t *header);
 
 static void     cfs_exit_download (cfs_thread_arg_t *args, void *body_buff, int code);
+static void     my_cfs_exit_download (my_cfs_thread_arg_t *args, void *body_buff, int code);
 static int      cfs_log (int level, char *fmt, ...);
 static void     cfs_init();
 static void*    signal_hander(int num);
