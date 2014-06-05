@@ -14,24 +14,29 @@ do \
 
 enum {ERR, WARN, NOTICE};
 
-// added for cfs download 
 typedef struct file_part
 {
-//	int file_part_id; //  
-	int flag;      //record if this part is download ok:0--failed or not be download; 1--ok
+	int flag;      //record if this part is download ok:0--not be download;-1-- failed; 1--ok ; 2-- is downloading
 	char pathname[256];
 	long int offset;
 	long int data_size;
 //	struct file_part *next;
 }file_part_t;
 
-typedef struct cfs_node_record //record if the cfsnode host:port has file_path[256],flag--0,not exist;flag--1,exist.
+typedef struct cfs_node_record 
 {
+    int flag;       //record if the cfsnode host:port has file_path[256],flag--0,not exist;flag--1,exist.
     char host[256];
     short  port;
     char file_path[256];
-    int flag;
 }cfs_node_record_t;
+
+typedef struct my_thread_arg { //test ...
+    file_part_t *fpt;
+    cfs_node_record_t  *cnrt;
+//	int         *nthread; // not used
+//	int          fd; //not used
+} my_cfs_thread_arg_t;
 
 typedef struct cfs_req {
 	short       req_port;
@@ -69,13 +74,6 @@ typedef struct cfs_thread_arg {
 	long long    offset;
 	long long    limit;
 } cfs_thread_arg_t;
-
-typedef struct my_thread_arg { //test ...
-//	int         *nthread; // not used
-    file_part_t fpt;
-    cfs_node_record_t  cnrt;
-//	int          fd; //not used
-} my_cfs_thread_arg_t;
 
 typedef struct cfs_origin_config {
 	short    port;
@@ -152,14 +150,14 @@ static void     cfs_exit_download (cfs_thread_arg_t *args, void *body_buff, int 
 static void     my_cfs_exit_download (my_cfs_thread_arg_t *args, void *body_buff, int code);
 static int      cfs_log (int level, char *fmt, ...);
 static void     cfs_init();
-static void*    signal_hander(int num);
+static void    signal_hander(int num);
 static void     cfs_disk_init(MYSQL *conn_ptr, cfs_disk_t **disk, unsigned long *len);
 static int      cfs_iostats(const int fd, cfs_disk_t *disk, const unsigned long len, cfs_disk_t **result);
 static char*    cfs_ioerror(char *buff);
 
 void   cfs_free(void *ptr);
 void   *cfs_malloc(size_t size);
-void   cfs_split(const char *str, const char delimiter, char **key, char **val);
+void   cfs_split(char *str, const char delimiter, char **key, char **val);
 
 void* cfs_server_run();
 static unsigned long get_file_size(const char *path);
