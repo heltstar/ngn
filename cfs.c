@@ -121,7 +121,7 @@ int main(int argc, char **argv)
             memset(my_record, 0, sizeof(my_req_t));
             printf("first try to get resources(file_path=%s) from other cfs node \n",result_row[1]);
             cfs_cfsedge_config_t *pccc = g_config->cfsedge;// first try to get resources from other cfs nodes.
-			if(NULL != pccc)
+            if(NULL != pccc)
 			{
 				printf("try to get file(file_path=%s) from cfsnode\n",my_record->req_file_path);
 				printf("cfs_download start\n");
