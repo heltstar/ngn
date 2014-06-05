@@ -31,11 +31,10 @@ typedef struct cfs_node_record
     char file_path[256];
 }cfs_node_record_t;
 
-typedef struct my_thread_arg { //test ...
+typedef struct my_thread_arg { // thread struct 
     file_part_t *fpt;
     cfs_node_record_t  *cnrt;
-//	int         *nthread; // not used
-//	int          fd; //not used
+	int         *nthread; 
 } my_cfs_thread_arg_t;
 
 typedef struct cfs_req {
