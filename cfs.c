@@ -60,8 +60,6 @@ int main(int argc, char **argv)
 
     cfs_req_t *req_record = (cfs_req_t *)cfs_malloc(sizeof(cfs_req_t));
 
-	my_req_t *my_record = (my_req_t*)cfs_malloc(sizeof(my_req_t)); // download ...
-
     // load config file
     cfs_config_init(argc, argv);
 
@@ -70,7 +68,6 @@ int main(int argc, char **argv)
 
     // connect mysql
     MYSQL *conn_ptr = NULL;
-
     conn_ptr = db_connect(mysql->host, mysql->username, mysql->password, mysql->database, mysql->port);
     if (conn_ptr == NULL){
         cfs_log(ERR, "connect mysql Access denied!");
@@ -117,41 +114,16 @@ int main(int argc, char **argv)
         if (((long int)rows) != 0){
             int flag = 0; 
             result_row = mysql_fetch_row(data_res);
-
-            memset(my_record, 0, sizeof(my_req_t));
-            printf("first try to get resources(file_path=%s) from other cfs node \n",result_row[1]);
-            cfs_cfsedge_config_t *pccc = g_config->cfsedge;// first try to get resources from other cfs nodes.
-            if(NULL != pccc)
-			{
-				printf("try to get file(file_path=%s) from cfsnode\n",my_record->req_file_path);
-				printf("cfs_download start\n");
-                long long file_size = 8888;//TODO:get file_size like http head...
-				int flag = my_cfs_download(pccc, result_row[1], file_size);
-				if(flag == 0)
-				{
-					printf("cfs_download success...\n");
-					// delete file record mysql trigger insert to cdn_file_records table if disk_id > 0 
-					sprintf(sql, "DELETE FROM %s WHERE id = %s", T_CDN_DOWN_QUEUE, result_row[0]);
-					if(db_query(conn_ptr, sql))
-					{
-						cfs_log(ERR, "query delete date error");
-					} 
-					goto cfs;  // download resources success.
-				}
-				printf("cfs_download failed...\n");
-			}
-
 			req_record->req_path = strdup(result_row[1]);
+
 			char now_date_str[32] = {0};
 			cfs_get_localtime(now_date_str);
-			flag = 0;// init flag for origin below
 			// update record start download date
 			sprintf(sql, "UPDATE %s SET start_date = '%s' WHERE id = %s", T_CDN_DOWN_QUEUE, now_date_str, result_row[0]);
 			if (db_query(conn_ptr, sql)){
 				cfs_log(ERR, "query update date error");
 			}
 
-			cfs_log(NOTICE, "now try to get resources from origin node...");
 			if (strlen(result_row[4]) > 0){
 				char *key = NULL;
 				char *val = NULL ;
@@ -188,7 +160,21 @@ int main(int argc, char **argv)
 				if (((header.http_code == 200 || header.http_code == 206) && req_record->is_hdfs == 1 && header.hdfs_code == 1000) || 
 						((header.http_code == 200 || header.http_code == 206) && req_record->is_hdfs == 0)){
 					req_record->file_size = header.content_length;
-					// 
+	
+                    cfs_cfsedge_config_t *pccc = g_config->cfsedge;// first try to get resources from other cfs nodes.
+                    if(NULL != pccc)
+                    {
+                        printf("try to get file(file_path=%s) from cfsnode\ncfs_download start\n",req_record->req_path);
+                        int flg = my_cfs_download(pccc, req_record->req_path, header.content_length);
+                        if(flg == 0)
+                        {
+                            printf("cfs_download success...\n");
+                            goto cfs;  
+                        }
+                        printf("cfs_download failed...\n");
+                    } 
+     
+                    printf("second try to get resources(file_path=%s) from origin\n",result_row[1]);
 					if (g_config->io_utilization == 0) {
 						cfs_download(req_record, g_config->work_dir);
 					}else{
@@ -220,7 +206,8 @@ int main(int argc, char **argv)
 			}else{
 				cfs_log(WARN, "Connection %s:%d failed Get file path %s %s", req_record->req_host, req_record->req_port, req_record->req_path, req_record->file_path);
 			}
-			// delete file record mysql trigger insert to cdn_file_records table if disk_id > 0 
+cfs:
+            // delete file record mysql trigger insert to cdn_file_records table if disk_id > 0 
 			sprintf(sql, "DELETE FROM %s WHERE id = %s", T_CDN_DOWN_QUEUE, result_row[0]);
 			if (db_query(conn_ptr, sql)){
 				cfs_log(ERR, "query delete date error");
@@ -238,7 +225,6 @@ end:
 			cfs_log(NOTICE, "sleep 5 seconds");
 			sleep(5);
 		}
-cfs:
 		db_free_result(data_res);
 		if (g_quit == 1) {
 			cfs_log(NOTICE, "Exiting ...");
@@ -487,8 +473,11 @@ my_cfs_download(cfs_cfsedge_config_t *pccc, char *file_path, long long file_size
     int i = 0;
     long package_nums;
     long long  pkg_size = g_config->package_size * 1024;
+    char local_file_path[256] = {0};
+
+    sprintf(local_file_path,"%s%s", g_config->work_dir, file_path);
     // file already exists
-    if (access(file_path, 0) == 0) {
+    if (access(local_file_path, 0) == 0) {
         cfs_log(NOTICE, "File is exist %s", file_path);
         printf("File is exist %s\n", file_path);
         return 0;
@@ -512,17 +501,17 @@ my_cfs_download(cfs_cfsedge_config_t *pccc, char *file_path, long long file_size
     memset(fpt, 0, package_nums * sizeof(file_part_t));
     for(i=0; i< package_nums; i++)
     {
-        fpt[i].file_part_id = i; //  
+        //fpt[i].file_part_id = i; //  
         fpt[i].flag = 0;      
         strcpy(fpt[i].pathname, file_path);
         fpt[i].offset = i * pkg_size;
         if((fpt[i].offset +  pkg_size) <=  file_size)
         {
-            fpt[i].limit = fpt[i].offset + pkg_size - 1;
+            fpt[i].data_size = pkg_size;
         }
         else
         {
-            fpt[i].limit = file_size % pkg_size ;
+            fpt[i].data_size = file_size % pkg_size ;
         }
     }
 
@@ -941,7 +930,7 @@ my_cfs_download_part(void *params)
     sst.file_size = 0;
     strcpy(sst.file_path,args->cnrt.file_path);
     sst.offset = args->fpt.offset;
-    sst.limit = args->fpt.limit;
+    sst.data_size = args->fpt.data_size;
     printf("%d,sizoef(sst)=%lu\n",__LINE__,sizeof(sst));
 
     wnd = cfs_writen(sock, &sst, sizeof(sst));
@@ -963,7 +952,7 @@ my_cfs_download_part(void *params)
         return (void*)-1;
     }
 
-    nwrite = args->fpt.limit - args->fpt.offset + 1; // the data will be send
+    nwrite = args->fpt.data_size; // the data will be send
 
     fd = open(sst.file_path, O_CREAT|O_WRONLY, 0755);
     printf("while :read from nodecfs data\n");
@@ -1857,57 +1846,51 @@ static int do_send_file(int sockfd)
     unsigned long ulres = 0;
     unsigned long data_rds = 0;
     FILE *filep; 
-    send_struct_t *sst_tmp;
+    send_struct_t sst_tmp;
     int wnd = 0;
     int rnd =0;
-    char *rdbuf = NULL;
+    char req_file_path[256] = {0};
 
-    rdbuf = (char*)malloc(sizeof(send_struct_t));
-    memset(rdbuf, 0, sizeof(send_struct_t));
-    rnd = cfs_readn(sockfd,rdbuf,sizeof(send_struct_t));
-    sst_tmp = (send_struct_t*)rdbuf;
-
+    rnd = cfs_readn(sockfd,(char*)&sst_tmp,sizeof(send_struct_t));
     if(rnd != sizeof(send_struct_t))
     {
         printf("%d,%d !=recve\n",__LINE__,rnd);
-        sst_tmp->file_exist_flag = 0;
-        sst_tmp->file_size = 0; 
+        sst_tmp.file_exist_flag = 0;
+        sst_tmp.file_size = 0; 
 
-        wnd = cfs_writen(sockfd, (char*)sst_tmp, sizeof(send_struct_t));
+        wnd = cfs_writen(sockfd, (char*)&sst_tmp, sizeof(send_struct_t));
 
-        printf("%d,write struct size=%d, sst_tmp->file_size=%llu, sst_tmp->file_exist_flag= %d\n",__LINE__,wnd, sst_tmp->file_size, sst_tmp->file_exist_flag);
-        free(rdbuf);
+        printf("%d,write struct size=%d, sst_tmp.file_size=%llu, sst_tmp.file_exist_flag= %d\n",__LINE__,wnd, sst_tmp.file_size, sst_tmp.file_exist_flag);
         return -1;
     }
     else
     {
         printf("%d,%d ==write\n",__LINE__,rnd);
-        if(0 == access(sst_tmp->file_path, R_OK))
+        sprintf(req_file_path,"%s%s",g_config->work_dir, sst_tmp.file_path); // file_path
+        if(0 == access(req_file_path, R_OK))
         {
-            sst_tmp->file_exist_flag = 1;
+            sst_tmp.file_exist_flag = 1;
         }
-        sst_tmp->file_size = get_file_size(sst_tmp->file_path);
+        sst_tmp.file_size = get_file_size(req_file_path);
 
-        wnd = cfs_writen(sockfd, (char*)sst_tmp, sizeof(send_struct_t));
-        printf("%d,write struct size=%d, sst_tmp->file_size=%llu, sst_tmp->file_exist_flag= %d\n",__LINE__,wnd, sst_tmp->file_size, sst_tmp->file_exist_flag);
+        wnd = cfs_writen(sockfd, (char*)&sst_tmp, sizeof(send_struct_t));
+        printf("%d,write struct size=%d, sst_tmp.file_size=%llu, sst_tmp.file_exist_flag= %d\n",__LINE__,wnd, sst_tmp.file_size, sst_tmp.file_exist_flag);
 
-        if(sst_tmp->file_exist_flag == 0)
+        if(sst_tmp.file_exist_flag == 0)
         {
-            free(rdbuf);
             return 0;
         }
     }
 
-    data_size = sst_tmp->limit;
-    filep = fopen(sst_tmp->file_path,"r");
-    free(rdbuf);
+    data_size = sst_tmp.data_size; //limit is size of the data wanted
+    filep = fopen(req_file_path,"r");
     if(NULL == filep)
     {
-        printf("file_path,%s:NULL == filep\n",sst_tmp->file_path);
+        printf("file_path,%s:NULL == filep\n",req_file_path);
         fclose(filep);
         return -1;
     }
-    fseek(filep, sst_tmp->offset, SEEK_SET);//TODO:
+    fseek(filep, sst_tmp.offset, SEEK_SET);
 
     while(ulres < data_size)  // send request files 
     {
@@ -1919,12 +1902,14 @@ static int do_send_file(int sockfd)
         }
         if(data_rds == 0)
         {
-            sleep(3);
+            sleep(1);
             break;
         }
         printf("%d,fread data size=%lu\n",__LINE__,data_rds);
         wnd = cfs_writen(sockfd, rw_buf, data_rds);
         printf("%d,writen data size=%d\n",__LINE__,wnd);
+
+        ulres += data_rds;
     }
 
     printf("send data end.\n");
