@@ -125,7 +125,8 @@ int main(int argc, char **argv)
 			{
 				printf("try to get file(file_path=%s) from cfsnode\n",my_record->req_file_path);
 				printf("cfs_download start\n");
-				int flag = my_cfs_download(pccc, reuslt_row[1]);
+                long long file_size = 8888;//TODO:get file_size like http head...
+				int flag = my_cfs_download(pccc, result_row[1], file_size);
 				if(flag == 0)
 				{
 					printf("cfs_download success...\n");
@@ -481,1319 +482,1466 @@ cfs_download(cfs_req_t *req_info, char *work_path)
 	static int
 my_cfs_download(cfs_cfsedge_config_t *pccc, char *file_path, long long file_size)
 {
-	my_req_t *req_info;
-	cfs_cfsedge_config_t *pccc_tmp = pccc;
-	long long nwrite = file_size;
-	send_struct_t sst;
-	int sock;
-	int fd;
-	int i = 0;
-	int wnd,rnd;
-	char recv_buff[4096]={0};
-	// file already exists
-	if (access(file_path, 0) == 0) {
-		cfs_log(NOTICE, "File is exist %s", file_path);
-		printf("File is exist %s\n", file_path);
-		return 0;
-	}
-	
-	while(file_size > 0)
-	{
-		my_record->req_port = pccc->port;
-		my_record->req_host = strdup(pccc->host);
-		my_record->req_file_path = strdup(file_path);
+    int nthread     = 0;
+    int max_threads = g_config->thread_size;
+    int i = 0;
+    long package_nums;
+    long long  pkg_size = g_config->package_size * 1024;
+    // file already exists
+    if (access(file_path, 0) == 0) {
+        cfs_log(NOTICE, "File is exist %s", file_path);
+        printf("File is exist %s\n", file_path);
+        return 0;
+    }
 
-		sock = cfs_socket_init(req_info->req_host, req_info->req_port);
-		if (sock < 0)
-		{
-			printf("sock init error\n"); 
-			return -1;
-		}
+    //   init file part struct
+    if(0 == (file_size % pkg_size))
+    {
+        package_nums = file_size/pkg_size;
+    }
+    else
+    {
+        package_nums = file_size/pkg_size + 1;
+    }
+    file_part_t *fpt =(file_part_t*)malloc(package_nums * sizeof(file_part_t));
+    if(fpt == NULL)
+    {
+        printf("malloc errror.\n");
+        return -1;
+    }
+    memset(fpt, 0, package_nums * sizeof(file_part_t));
+    for(i=0; i< package_nums; i++)
+    {
+        fpt[i].file_part_id = i; //  
+        fpt[i].flag = 0;      
+        strcpy(fpt[i].pathname, file_path);
+        fpt[i].offset = i * pkg_size;
+        if((fpt[i].offset +  pkg_size) <=  file_size)
+        {
+            fpt[i].limit = fpt[i].offset + pkg_size - 1;
+        }
+        else
+        {
+            fpt[i].limit = file_size % pkg_size ;
+        }
+    }
 
-	sst.file_exist_flag = 0;
-	sst.file_size = 0;
-	strcpy(sst.file_path,req_info->req_file_path);
-	printf("%d,sizoef(sst)=%lu\n",__LINE__,sizeof(sst));
+    //   init cfs node part struct
+    cfs_node_record_t *cnr = (cfs_node_record_t*)malloc(sizeof(cfs_node_record_t) * g_config->cfsedge_nums);
+    if(cnr == NULL)
+    {
+        printf("malloc errror.\n");
+        return -1;
+    }
+    memset(cnr, 0, sizeof(cfs_node_record_t) * g_config->cfsedge_nums);
+    for(i=0; i< g_config->cfsedge_nums && pccc != NULL; i++, pccc = pccc->next)
+    {
+        cnr[i].flag = 1;      
+        strcpy(cnr[i].host, pccc->host);
+        strcpy(cnr[i].file_path,file_path); 
+        cnr[i].port = pccc->port;
+    }
 
-	wnd = cfs_writen(sock, &sst, sizeof(sst));
-	printf("%d,writen size =%u\n",__LINE__,wnd);
+    while(file_size > 0)
+    {
+        if (nthread >= max_threads) {
+            sleep(1);
+            continue;
+        }
 
-	memset(&sst, 0, sizeof(sst));
-	rnd = cfs_readn(sock,(void*)&sst,sizeof(sst));
-	if(rnd != sizeof(sst))
-	{
-		printf("error.,rnd=%d\n",rnd);
-		close(sock);
-		return -1;
-	}
-	if(sst.file_exist_flag != 1 || sst.file_size == 0)
-	{
-		printf("sst.file_exist_flag = %d\n sst.file_size = %llu\n", sst.file_exist_flag, sst.file_size);
-		printf("file not exist or file size is 0\n");
-		close(sock);
-		return -1;
-	}
+        my_cfs_thread_arg_t *args = (my_cfs_thread_arg_t *)malloc(sizeof(my_cfs_thread_arg_t));
+        if (args == NULL){
+            return -1;
+        }
 
-	nwrite = sst.file_size ;
+        for(i=0; i < g_config->cfsedge_nums; i++)
+        {
+            if(cnr[i].flag == 1)
+            {
+                args->cnrt = cnr[i];
+                break;
+            }
+        }
 
-	fd = open(sst.file_path, O_CREAT|O_WRONLY, 0755);
-	printf("while :read from nodecfs data\n");
-	while((rnd = cfs_readn(sock, recv_buff, sizeof(recv_buff))) != 0) // write buff to file
-	{    
-		printf("read data from node cfs size rnd = %d\n",rnd);
-		wnd = cfs_writen(fd, recv_buff, rnd);
-		printf("write to files data size wnd= %d\n",wnd);
-		nwrite -= rnd;
-	}
+        for(i=0; i < package_nums; i++)
+        {
+            if(fpt[i].flag == 0)
+            {
+                args->fpt = fpt[i];
+                break;
+            }
+        }
 
-	if(nwrite > 0)
-	{
-		printf("get data error.\n");
-	}
+        pthread_t tid;
+        int res = pthread_create(&tid, NULL, my_cfs_download_part, (void *)args);
+        if (res == 0){
+            pthread_mutex_lock(&g_mutex_lock);
+            if (nthread < max_threads)
+                nthread++;
+            pthread_mutex_unlock(&g_mutex_lock);
+        }
+        file_size -= pkg_size;
+    }
 
-	close(fd);
-	close(sock);
-	}
-	return 0;
+    // wait thread all download done
+    while (!(nthread == 0)) {
+        if (file_size > (30 * 1024 * 1024)){
+            sleep(5);
+        }else if (file_size > (5 * 1024 * 1024)){
+            sleep(1);
+        }else{
+            usleep(250000);
+        }
+    }
+
+    // download failed delete temp file
+    if (g_download_stat == 1){
+        cfs_log(NOTICE, "download %s %s failed", file_path);
+        unlink(file_path);
+        return -1;
+    }
+
+    return 0;
 }
-	static ssize_t
+    static ssize_t
 cfs_writen(const int sock, void *data, size_t length)
 {
-	char *buff = (char *)data;
-	size_t nwrite = length;
-	ssize_t nres;
-	while (nwrite > 0) {
-		if ((nres = write(sock, buff, nwrite)) < 0) {
-			if (errno == EINTR)
-				continue;
-		}
-		else if (nres == 0) {
-			continue;
-		}
+    char *buff = (char *)data;
+    size_t nwrite = length;
+    ssize_t nres;
+    while (nwrite > 0) {
+        if ((nres = write(sock, buff, nwrite)) < 0) {
+            if (errno == EINTR)
+                continue;
+        }
+        else if (nres == 0) {
+            continue;
+        }
 
-		buff += nres;
-		nwrite -= nres;
-	}
-	return length;
+        buff += nres;
+        nwrite -= nres;
+    }
+    return length;
 }
 
-	static ssize_t
+    static ssize_t
 cfs_readn(const int fd, void *buf, size_t length)
 {
-	size_t nleft = length;
-	ssize_t nread;
-	char *bufp = (char*)buf;
+    size_t nleft = length;
+    ssize_t nread;
+    char *bufp = (char*)buf;
 
-	while (nleft > 0)
-	{
-		if ((nread = read(fd, bufp, nleft)) < 0)
-		{
-			if (errno == EINTR)
-				continue;
-			return -1;
-		}
-		else if (nread == 0)
-			return length - nleft;
+    while (nleft > 0)
+    {
+        if ((nread = read(fd, bufp, nleft)) < 0)
+        {
+            if (errno == EINTR)
+                continue;
+            return -1;
+        }
+        else if (nread == 0)
+            return length - nleft;
 
-		bufp += nread;
-		nleft -= nread;
-	}
-	return length;
+        bufp += nread;
+        nleft -= nread;
+    }
+    return length;
 }
 
-	static void
+    static void
 cfs_exit_download(cfs_thread_arg_t *args, void *body_buff, int code)
 {
-	pthread_mutex_lock(&g_mutex_lock);
-	int thread = *args->nthread;
-	if (thread > 0){
-		*args->nthread = --thread;
-	}
-	pthread_mutex_unlock(&g_mutex_lock);
-	if (code == -1) {
-		if (unlink(args->path)){
-		}    
-	}
+    pthread_mutex_lock(&g_mutex_lock);
+    int thread = *args->nthread;
+    if (thread > 0){
+        *args->nthread = --thread;
+    }
+    pthread_mutex_unlock(&g_mutex_lock);
+    if (code == -1) {
+        if (unlink(args->path)){
+        }    
+    }
 
-	if (args != NULL) {
-		free(args); 
-		args = NULL;   
-	}
+    if (args != NULL) {
+        free(args); 
+        args = NULL;   
+    }
 
-	if (body_buff != NULL) {
-		free(body_buff); 
-		body_buff = NULL;   
-	}
-	pthread_exit(0);
+    if (body_buff != NULL) {
+        free(body_buff); 
+        body_buff = NULL;   
+    }
+    pthread_exit(0);
 }
 
 
-	static void *
+    static void *
 cfs_download_part(void *params)
 {
-	cfs_thread_arg_t *args  = (cfs_thread_arg_t *)params;
-	char   *rh              = NULL;
-	void   *recv_buff       = NULL;
-	char    log_buff[256]   = {0};
-	char    tmp[256]        = {0};
-	int     nres;
+    cfs_thread_arg_t *args  = (cfs_thread_arg_t *)params;
+    char   *rh              = NULL;
+    void   *recv_buff       = NULL;
+    char    log_buff[256]   = {0};
+    char    tmp[256]        = {0};
+    int     nres;
 
-	cfs_origin_config_t *origin = NULL;
-	if (g_config != NULL) {
-		origin = g_config->origin;
-	}
+    cfs_origin_config_t *origin = NULL;
+    if (g_config != NULL) {
+        origin = g_config->origin;
+    }
 
-	rh = (char *)malloc(1024);
-	if (rh == NULL) {
-		cfs_exit_download(args, NULL, -1);
-		return (void *)0;
-	}
-	memset(rh, 0, 1024);
+    rh = (char *)malloc(1024);
+    if (rh == NULL) {
+        cfs_exit_download(args, NULL, -1);
+        return (void *)0;
+    }
+    memset(rh, 0, 1024);
 
-	recv_buff = (void *)malloc(4096);
-	if (recv_buff == NULL) {
-		cfs_exit_download(args, NULL, -1);
-		return (void *)0;
-	}
-	memset(recv_buff, 0, 4096);
+    recv_buff = (void *)malloc(4096);
+    if (recv_buff == NULL) {
+        cfs_exit_download(args, NULL, -1);
+        return (void *)0;
+    }
+    memset(recv_buff, 0, 4096);
 
-	// long long size = args->limit - args->offset + 1;
-	// body_buff = (char *)malloc(size + 1);
-	// if (body_buff == NULL) {
-	//     if (rh != NULL) {
-	//         free(rh);
-	//         rh = NULL;
-	//     }
-	//     cfs_exit_download(args, body_buff, -1);
-	//     return (void *)0;
-	// }
-	// memset(body_buff, 0, size + 1);
+    // long long size = args->limit - args->offset + 1;
+    // body_buff = (char *)malloc(size + 1);
+    // if (body_buff == NULL) {
+    //     if (rh != NULL) {
+    //         free(rh);
+    //         rh = NULL;
+    //     }
+    //     cfs_exit_download(args, body_buff, -1);
+    //     return (void *)0;
+    // }
+    // memset(body_buff, 0, size + 1);
 
-	int sock = cfs_socket_init(args->req->req_host, args->req->req_port);
-	if (sock < 0) {
-		if (rh != NULL) {
-			free(rh);
-			rh = NULL;
-		}
-		pthread_mutex_lock(&g_mutex_lock);
-		g_download_stat = 1;
-		pthread_mutex_unlock(&g_mutex_lock);
-		goto clean;
-	}
+    int sock = cfs_socket_init(args->req->req_host, args->req->req_port);
+    if (sock < 0) {
+        if (rh != NULL) {
+            free(rh);
+            rh = NULL;
+        }
+        pthread_mutex_lock(&g_mutex_lock);
+        g_download_stat = 1;
+        pthread_mutex_unlock(&g_mutex_lock);
+        goto clean;
+    }
 
-	sprintf(tmp, "GET %s HTTP/1.1\r\n", args->req->req_path);
-	strcat(rh, tmp);
-	sprintf(tmp, "Host: %s:%d\r\n", args->req->req_host, args->req->req_port);
-	strcat(rh, tmp);
-	sprintf(tmp, "Accept: */*\r\n");
-	strcat(rh, tmp);
-	sprintf(tmp, "User-Agent: %s\r\n", g_user_agent);
-	strcat(rh, tmp);
-	sprintf(tmp, "Accept-Language: zh-CN,zh;q=0.8\r\n");
-	strcat(rh, tmp);
-	sprintf(tmp, "Range:bytes=%lld-%lld\r\n", args->offset, args->limit);
-	strcat(rh, tmp);
+    sprintf(tmp, "GET %s HTTP/1.1\r\n", args->req->req_path);
+    strcat(rh, tmp);
+    sprintf(tmp, "Host: %s:%d\r\n", args->req->req_host, args->req->req_port);
+    strcat(rh, tmp);
+    sprintf(tmp, "Accept: */*\r\n");
+    strcat(rh, tmp);
+    sprintf(tmp, "User-Agent: %s\r\n", g_user_agent);
+    strcat(rh, tmp);
+    sprintf(tmp, "Accept-Language: zh-CN,zh;q=0.8\r\n");
+    strcat(rh, tmp);
+    sprintf(tmp, "Range:bytes=%lld-%lld\r\n", args->offset, args->limit);
+    strcat(rh, tmp);
 
-	if (args->req->is_hdfs == 1) {
-		char md5_buff[64] = {0};
-		memset(md5_buff, 0, sizeof(md5_buff));
-		if (cfs_md5_encode((unsigned char*)origin->username, strlen(origin->username), md5_buff) == -1){
+    if (args->req->is_hdfs == 1) {
+        char md5_buff[64] = {0};
+        memset(md5_buff, 0, sizeof(md5_buff));
+        if (cfs_md5_encode((unsigned char*)origin->username, strlen(origin->username), md5_buff) == -1){
 
-		}
-		sprintf(tmp, "user: %s\r\n", md5_buff);
-		strcat(rh, tmp);
+        }
+        sprintf(tmp, "user: %s\r\n", md5_buff);
+        strcat(rh, tmp);
 
-		memset(md5_buff, 0, sizeof(md5_buff));
-		if (cfs_md5_encode((unsigned char *)origin->password, strlen(origin->password), md5_buff) == -1){
+        memset(md5_buff, 0, sizeof(md5_buff));
+        if (cfs_md5_encode((unsigned char *)origin->password, strlen(origin->password), md5_buff) == -1){
 
-		}
-		sprintf(tmp, "pass: %s\r\n", md5_buff);
-		strcat(rh, tmp);
+        }
+        sprintf(tmp, "pass: %s\r\n", md5_buff);
+        strcat(rh, tmp);
 
-		// request url encode
-		// char url_file_path[256] = {0};
-		// if (url_encode(args->req->req_path, strlen(args->req->req_path), url_file_path, sizeof(url_file_path)) == 0){
-		// close(sockfd);
-		// writelog("url_encode error\r\n");
-		//        }
-		sprintf(tmp, "path: %s\r\n", args->req->file_path);
-		strcat(rh, tmp);
+        // request url encode
+        // char url_file_path[256] = {0};
+        // if (url_encode(args->req->req_path, strlen(args->req->req_path), url_file_path, sizeof(url_file_path)) == 0){
+        // close(sockfd);
+        // writelog("url_encode error\r\n");
+        //        }
+        sprintf(tmp, "path: %s\r\n", args->req->file_path);
+        strcat(rh, tmp);
 
-		if (strlen(origin->rate) != 0) {
-			sprintf(tmp, "rate: %s\r\n", origin->rate);
-			strcat(rh, tmp);
-		}
+        if (strlen(origin->rate) != 0) {
+            sprintf(tmp, "rate: %s\r\n", origin->rate);
+            strcat(rh, tmp);
+        }
 
-		if (strlen(origin->cache) != 0) {
-			sprintf(tmp, "cached: %s\r\n", origin->cache);
-			strcat(rh, tmp);
-		}
+        if (strlen(origin->cache) != 0) {
+            sprintf(tmp, "cached: %s\r\n", origin->cache);
+            strcat(rh, tmp);
+        }
 
-		sprintf(tmp, "Accept-Encoding: gzip,deflate,sdch\r\n");
-		strcat(rh, tmp);
-	}
+        sprintf(tmp, "Accept-Encoding: gzip,deflate,sdch\r\n");
+        strcat(rh, tmp);
+    }
 
-	sprintf(tmp, "Connection: close\r\n\r\n");
-	strcat(rh, tmp);
+    sprintf(tmp, "Connection: close\r\n\r\n");
+    strcat(rh, tmp);
 
-	// write socket http request
-	cfs_writen(sock, rh, strlen(rh));
-	if (rh != NULL) {
-		free(rh);
-		rh = NULL;
-	}
+    // write socket http request
+    cfs_writen(sock, rh, strlen(rh));
+    if (rh != NULL) {
+        free(rh);
+        rh = NULL;
+    }
 
-	int fd = open(args->path, O_CREAT|O_WRONLY, 0755);
-	if (fd == -1) {
-		pthread_mutex_lock(&g_mutex_lock);
-		g_download_stat = 1;
-		pthread_mutex_unlock(&g_mutex_lock);
-		goto clean;
-	}
-	lseek(fd, args->offset, SEEK_SET);
+    int fd = open(args->path, O_CREAT|O_WRONLY, 0755);
+    if (fd == -1) {
+        pthread_mutex_lock(&g_mutex_lock);
+        g_download_stat = 1;
+        pthread_mutex_unlock(&g_mutex_lock);
+        goto clean;
+    }
+    lseek(fd, args->offset, SEEK_SET);
 
-	const char *split = "\r\n\r\n";
+    const char *split = "\r\n\r\n";
 
-	while((nres = cfs_readn(sock, recv_buff, 4096)) != 0) {
-		char *idx = strstr((char *)recv_buff, split);
+    while((nres = cfs_readn(sock, recv_buff, 4096)) != 0) {
+        char *idx = strstr((char *)recv_buff, split);
 
-		if (idx != NULL) {
-			char *content        = idx + 4;
-			int head_len         = content - (char *)recv_buff;
-			char *recv_head_buff = (char *)malloc(head_len + 1);
+        if (idx != NULL) {
+            char *content        = idx + 4;
+            int head_len         = content - (char *)recv_buff;
+            char *recv_head_buff = (char *)malloc(head_len + 1);
 
-			memset(recv_head_buff, 0, head_len + 1);
-			memcpy(recv_head_buff, recv_buff, head_len);
+            memset(recv_head_buff, 0, head_len + 1);
+            memcpy(recv_head_buff, recv_buff, head_len);
 
-			// verify http return code
-			char *status = strstr(recv_head_buff, "HTTP/1.1");
-			if (status == NULL) {
-				status = strstr(recv_head_buff, "HTTP/1.0");
-			}
-			if (status != NULL){
-				status = strchr(recv_head_buff, ' ');
-				if (status != NULL){
-					status++;
-					short http_code = atoi(status);
-					if (http_code >= 400){
-						cfs_log(WARN, "Get %s %d", args->req->req_path, http_code);
+            // verify http return code
+            char *status = strstr(recv_head_buff, "HTTP/1.1");
+            if (status == NULL) {
+                status = strstr(recv_head_buff, "HTTP/1.0");
+            }
+            if (status != NULL){
+                status = strchr(recv_head_buff, ' ');
+                if (status != NULL){
+                    status++;
+                    short http_code = atoi(status);
+                    if (http_code >= 400){
+                        cfs_log(WARN, "Get %s %d", args->req->req_path, http_code);
 
-						pthread_mutex_lock(&g_mutex_lock);
-						g_download_stat = 1;
-						pthread_mutex_unlock(&g_mutex_lock);
+                        pthread_mutex_lock(&g_mutex_lock);
+                        g_download_stat = 1;
+                        pthread_mutex_unlock(&g_mutex_lock);
 
-						if (recv_head_buff != NULL) {
-							free(recv_head_buff);
-							recv_head_buff = NULL;
-						}
-						goto clean;
-					}
-				}
-			}
+                        if (recv_head_buff != NULL) {
+                            free(recv_head_buff);
+                            recv_head_buff = NULL;
+                        }
+                        goto clean;
+                    }
+                }
+            }
 
-			// verify hdfs return code
-			if (args->req->is_hdfs == 1) {
-				char *first = strstr(recv_head_buff, "result:");
-				if (first != NULL){
-					first = strchr(first, ':');
-					first++;
-					int res_code = atoi(first);
-					int is_error = 0;
-					switch (res_code){
-						case 1001:
-							is_error = 1;
-							sprintf(log_buff, "Error: result code %d Message: Authentication failed!", res_code);
-							break;
-						case 1002:
-							is_error = 1;
-							sprintf(log_buff, "Error: result code %d Message: Resource is non-existent!", res_code);
-							break;
-						case 1005:
-							is_error = 1;
-							sprintf(log_buff, "Error: result code %d Message: Unknown error reasons!", res_code);
-							break;
-						case 1007:
-							is_error = 1;
-							sprintf(log_buff, "Error: result code %d Message: Path is not passed!", res_code);
-							break;
-						case 1009:
-							is_error = 1;
-							sprintf(log_buff, "Error: result code %d Message: HDFS operation failed!", res_code);
-							break;
-					}
+            // verify hdfs return code
+            if (args->req->is_hdfs == 1) {
+                char *first = strstr(recv_head_buff, "result:");
+                if (first != NULL){
+                    first = strchr(first, ':');
+                    first++;
+                    int res_code = atoi(first);
+                    int is_error = 0;
+                    switch (res_code){
+                        case 1001:
+                            is_error = 1;
+                            sprintf(log_buff, "Error: result code %d Message: Authentication failed!", res_code);
+                            break;
+                        case 1002:
+                            is_error = 1;
+                            sprintf(log_buff, "Error: result code %d Message: Resource is non-existent!", res_code);
+                            break;
+                        case 1005:
+                            is_error = 1;
+                            sprintf(log_buff, "Error: result code %d Message: Unknown error reasons!", res_code);
+                            break;
+                        case 1007:
+                            is_error = 1;
+                            sprintf(log_buff, "Error: result code %d Message: Path is not passed!", res_code);
+                            break;
+                        case 1009:
+                            is_error = 1;
+                            sprintf(log_buff, "Error: result code %d Message: HDFS operation failed!", res_code);
+                            break;
+                    }
 
-					// hdfs error exit current thread
-					if (is_error == 1){
+                    // hdfs error exit current thread
+                    if (is_error == 1){
 
-						if (args->req->is_hdfs == 1) {
-							cfs_log(WARN, "Get %s %s %s", args->req->req_path, args->req->file_path, log_buff);
-						}else{
-							cfs_log(WARN, "Get %s %s", args->req->req_path, log_buff);
-						}
+                        if (args->req->is_hdfs == 1) {
+                            cfs_log(WARN, "Get %s %s %s", args->req->req_path, args->req->file_path, log_buff);
+                        }else{
+                            cfs_log(WARN, "Get %s %s", args->req->req_path, log_buff);
+                        }
 
-						if (recv_head_buff != NULL) {
-							free(recv_head_buff);
-							recv_head_buff = NULL;
-						}
+                        if (recv_head_buff != NULL) {
+                            free(recv_head_buff);
+                            recv_head_buff = NULL;
+                        }
 
-						pthread_mutex_lock(&g_mutex_lock);
-						g_download_stat = 1;
-						pthread_mutex_unlock(&g_mutex_lock);
+                        pthread_mutex_lock(&g_mutex_lock);
+                        g_download_stat = 1;
+                        pthread_mutex_unlock(&g_mutex_lock);
 
-						goto clean;
-					}
-				}
-			}
-			cfs_free(recv_head_buff);
-			// write buff to file
-			cfs_writen(fd, content, nres - head_len);
-		}else{
-			cfs_writen(fd, recv_buff, nres);
-		}
-	}
+                        goto clean;
+                    }
+                }
+            }
+            cfs_free(recv_head_buff);
+            // write buff to file
+            cfs_writen(fd, content, nres - head_len);
+        }else{
+            cfs_writen(fd, recv_buff, nres);
+        }
+    }
 
-	// cfs_writen(fd, body_buff, nwrite);
+    // cfs_writen(fd, body_buff, nwrite);
 clean:
-	close(fd);
-	close(sock);
-	if (recv_buff != NULL) {
-		free(recv_buff);
-		recv_buff = NULL;
-	}
-	cfs_exit_download(args, NULL, 0);
-	return (void *)0;
+    close(fd);
+    close(sock);
+    if (recv_buff != NULL) {
+        free(recv_buff);
+        recv_buff = NULL;
+    }
+    cfs_exit_download(args, NULL, 0);
+    return (void *)0;
 }
 
-	static int
+
+    static void *
+my_cfs_download_part(void *params)
+{
+    my_cfs_thread_arg_t *args  = (my_cfs_thread_arg_t *)params;
+    send_struct_t sst;
+    void   *recv_buff       = NULL;
+    int wnd,rnd;
+    int nwrite;
+    int fd;
+
+    recv_buff = (void *)malloc(4096);
+    if (recv_buff == NULL) {
+        my_cfs_exit_download(args, NULL, -1);
+        return (void *)0;
+    }
+    memset(recv_buff, 0, 4096);
+
+    int sock = cfs_socket_init(args->cnrt.host, args->cnrt.port);
+    if (sock < 0) {
+        pthread_mutex_lock(&g_mutex_lock);
+        g_download_stat = 1;
+        pthread_mutex_unlock(&g_mutex_lock);
+        goto clean;
+    }
+
+    sst.file_exist_flag = 0;
+    sst.file_size = 0;
+    strcpy(sst.file_path,args->cnrt.file_path);
+    sst.offset = args->fpt.offset;
+    sst.limit = args->fpt.limit;
+    printf("%d,sizoef(sst)=%lu\n",__LINE__,sizeof(sst));
+
+    wnd = cfs_writen(sock, &sst, sizeof(sst));
+    printf("%d,writen size =%u\n",__LINE__,wnd);
+
+    memset(&sst, 0, sizeof(sst));
+    rnd = cfs_readn(sock,(void*)&sst,sizeof(sst));
+    if(rnd != sizeof(sst))
+    {
+        printf("error.,rnd=%d\n",rnd);
+        close(sock);
+        return (void*)-1;
+    }
+    if(sst.file_exist_flag != 1 || sst.file_size == 0)
+    {
+        printf("sst.file_exist_flag = %d\n sst.file_size = %llu\n", sst.file_exist_flag, sst.file_size);
+        printf("file not exist or file size is 0\n");
+        close(sock);
+        return (void*)-1;
+    }
+
+    nwrite = args->fpt.limit - args->fpt.offset + 1; // the data will be send
+
+    fd = open(sst.file_path, O_CREAT|O_WRONLY, 0755);
+    printf("while :read from nodecfs data\n");
+    lseek(fd, args->fpt.offset, SEEK_SET);
+
+    while((rnd = cfs_readn(sock, recv_buff, sizeof(recv_buff))) != 0) // write buff to file
+    {    
+        printf("read data from node cfs size rnd = %d\n",rnd);
+        wnd = cfs_writen(fd, recv_buff, rnd);
+        printf("write to files data size wnd= %d\n",wnd);
+        nwrite -= rnd;
+    }
+
+    if(nwrite >  0)
+    {
+        args->fpt.flag = 0;   //TODO:record thhis file part download  failed,should feedcack to global struct...
+        pthread_mutex_lock(&g_mutex_lock);
+        g_download_stat = 1;
+        pthread_mutex_unlock(&g_mutex_lock);
+        printf("get data error.\n");
+    }
+
+clean:
+    close(fd);
+    close(sock);
+    if (recv_buff != NULL) {
+        free(recv_buff);
+        recv_buff = NULL;
+    }
+    my_cfs_exit_download(args, NULL, 0);
+    return (void *)0;
+}
+
+static void     my_cfs_exit_download (my_cfs_thread_arg_t *args, void *body_buff, int code)
+{
+    if(NULL != body_buff)
+        free(body_buff);
+}
+
+
+    static int
 cfs_get_header(cfs_req_t *req, cfs_http_header_t *header)
 {
-	int     nres;
-	char   *pos, *epos;
-	char    tmp[256]     = {0};
-	char   *head_buff    = NULL;
-	char   *rh           = NULL;
-	char    buff[32]     = {0};
-	cfs_origin_config_t *origin = NULL;
-	const char *split    = "\r\n\r\n";
+    int     nres;
+    char   *pos, *epos;
+    char    tmp[256]     = {0};
+    char   *head_buff    = NULL;
+    char   *rh           = NULL;
+    char    buff[32]     = {0};
+    cfs_origin_config_t *origin = NULL;
+    const char *split    = "\r\n\r\n";
 
-	rh = (char *)cfs_malloc(1024);
-	head_buff = (char *)cfs_malloc(1024);
+    rh = (char *)cfs_malloc(1024);
+    head_buff = (char *)cfs_malloc(1024);
 
-	if (g_config != NULL) {
-		origin = g_config->origin;
-	}
+    if (g_config != NULL) {
+        origin = g_config->origin;
+    }
 
-	int sock = cfs_socket_init(req->req_host, req->req_port);
-	if (sock < 0){
-		return -1;
-	}
+    int sock = cfs_socket_init(req->req_host, req->req_port);
+    if (sock < 0){
+        return -1;
+    }
 
-	sprintf(tmp, "HEAD %s HTTP/1.1\r\n", req->req_path);
-	strcat(rh, tmp);
-	sprintf(tmp, "Host: %s:%d\r\n", req->req_host, req->req_port);
-	strcat(rh, tmp);
-	sprintf(tmp, "Accept: */*\r\n");
-	strcat(rh, tmp);
-	sprintf(tmp, "User-Agent: %s\r\n", g_user_agent);
-	strcat(rh, tmp);
-	sprintf(tmp, "Accept-Language: zh-CN,zh;q=0.8\r\n");
-	strcat(rh, tmp);
+    sprintf(tmp, "HEAD %s HTTP/1.1\r\n", req->req_path);
+    strcat(rh, tmp);
+    sprintf(tmp, "Host: %s:%d\r\n", req->req_host, req->req_port);
+    strcat(rh, tmp);
+    sprintf(tmp, "Accept: */*\r\n");
+    strcat(rh, tmp);
+    sprintf(tmp, "User-Agent: %s\r\n", g_user_agent);
+    strcat(rh, tmp);
+    sprintf(tmp, "Accept-Language: zh-CN,zh;q=0.8\r\n");
+    strcat(rh, tmp);
 
-	if (req->is_hdfs == 1) {
-		char md5_buff[64] = {0};
-		memset(md5_buff, 0, sizeof(md5_buff));
-		if (cfs_md5_encode((unsigned char*)origin->username, strlen(origin->username), md5_buff) == -1){
+    if (req->is_hdfs == 1) {
+        char md5_buff[64] = {0};
+        memset(md5_buff, 0, sizeof(md5_buff));
+        if (cfs_md5_encode((unsigned char*)origin->username, strlen(origin->username), md5_buff) == -1){
 
-		}
+        }
 
-		sprintf(tmp, "user: %s\r\n", md5_buff);
-		strcat(rh, tmp);
+        sprintf(tmp, "user: %s\r\n", md5_buff);
+        strcat(rh, tmp);
 
-		memset(md5_buff, 0, sizeof(md5_buff));
-		if (cfs_md5_encode((unsigned char *)origin->password, strlen(origin->password), md5_buff) == -1){
+        memset(md5_buff, 0, sizeof(md5_buff));
+        if (cfs_md5_encode((unsigned char *)origin->password, strlen(origin->password), md5_buff) == -1){
 
-		}
-		sprintf(tmp, "pass: %s\r\n", md5_buff);
-		strcat(rh, tmp);
-		sprintf(tmp, "path: %s\r\n", req->file_path);
-		strcat(rh, tmp);
-		sprintf(tmp, "Accept-Encoding: gzip,deflate,sdch\r\n");
-		strcat(rh, tmp);
-	}
+        }
+        sprintf(tmp, "pass: %s\r\n", md5_buff);
+        strcat(rh, tmp);
+        sprintf(tmp, "path: %s\r\n", req->file_path);
+        strcat(rh, tmp);
+        sprintf(tmp, "Accept-Encoding: gzip,deflate,sdch\r\n");
+        strcat(rh, tmp);
+    }
 
-	sprintf(tmp, "Connection: close\r\n\r\n");
-	strcat(rh, tmp);
+    sprintf(tmp, "Connection: close\r\n\r\n");
+    strcat(rh, tmp);
 
-	cfs_writen(sock, rh, strlen(rh));
-	cfs_free(rh);
+    cfs_writen(sock, rh, strlen(rh));
+    cfs_free(rh);
 
-	while((nres = cfs_readn(sock, head_buff, 1024)) != 0){
-		char *idx = strstr((char *)head_buff, split);
+    while((nres = cfs_readn(sock, head_buff, 1024)) != 0){
+        char *idx = strstr((char *)head_buff, split);
 
-		if (idx != NULL) {
-			pos = strstr(head_buff, "HTTP/1.1");
-			if (pos == NULL) {
-				pos = strstr(head_buff, "HTTP/1.0");
-			}
-			if (pos != NULL){
-				pos = strchr(pos, ' ');
-				if (pos != NULL){
-					pos++;
-					header->http_code = atoi(pos);
-				}
-			}
+        if (idx != NULL) {
+            pos = strstr(head_buff, "HTTP/1.1");
+            if (pos == NULL) {
+                pos = strstr(head_buff, "HTTP/1.0");
+            }
+            if (pos != NULL){
+                pos = strchr(pos, ' ');
+                if (pos != NULL){
+                    pos++;
+                    header->http_code = atoi(pos);
+                }
+            }
 
-			pos = strcasestr(head_buff, "Content-Type:");
-			if (pos != NULL){
-				pos = strchr(pos, ':');
-				if (pos != NULL){
-					pos++;
-					epos = strcasestr(pos, "\r\n");
-					if (epos != NULL){
-						memset(buff, 0, sizeof(buff));
-						strncpy(buff, pos, epos-pos);
-						if (buff[0] == ' ')
-							strcpy(header->content_type, &buff[1]);
-						else
-							strcpy(header->content_type, &buff[0]);
-					}
-				}
-			}
+            pos = strcasestr(head_buff, "Content-Type:");
+            if (pos != NULL){
+                pos = strchr(pos, ':');
+                if (pos != NULL){
+                    pos++;
+                    epos = strcasestr(pos, "\r\n");
+                    if (epos != NULL){
+                        memset(buff, 0, sizeof(buff));
+                        strncpy(buff, pos, epos-pos);
+                        if (buff[0] == ' ')
+                            strcpy(header->content_type, &buff[1]);
+                        else
+                            strcpy(header->content_type, &buff[0]);
+                    }
+                }
+            }
 
-			pos = strcasestr(head_buff, "Server:");
-			if (pos != NULL){
-				pos = strchr(pos, ':');
-				if (pos != NULL){
-					pos++;
-					epos = strcasestr(pos, "\r\n");
-					if (epos != NULL){
-						memset(buff, 0, sizeof(buff));
-						strncpy(buff, pos, epos-pos);
-						if (buff[0] == ' ')
-							strcpy(header->server, &buff[1]);
-						else
-							strcpy(header->server, &buff[0]);
-					}
-				}
-			}
+            pos = strcasestr(head_buff, "Server:");
+            if (pos != NULL){
+                pos = strchr(pos, ':');
+                if (pos != NULL){
+                    pos++;
+                    epos = strcasestr(pos, "\r\n");
+                    if (epos != NULL){
+                        memset(buff, 0, sizeof(buff));
+                        strncpy(buff, pos, epos-pos);
+                        if (buff[0] == ' ')
+                            strcpy(header->server, &buff[1]);
+                        else
+                            strcpy(header->server, &buff[0]);
+                    }
+                }
+            }
 
-			pos = strcasestr(head_buff, "Content-Length:");
-			if (pos != NULL){
-				pos = strchr(pos, ':');
-				if (pos != NULL){
-					pos++;
-					long long length = atoll(pos);
-					header->content_length = length;
-				}
-			}
+            pos = strcasestr(head_buff, "Content-Length:");
+            if (pos != NULL){
+                pos = strchr(pos, ':');
+                if (pos != NULL){
+                    pos++;
+                    long long length = atoll(pos);
+                    header->content_length = length;
+                }
+            }
 
-			pos = strcasestr(head_buff, "Accept-Ranges:");
-			if (pos != NULL){
-				header->accept_ranges = 1;
-			}
+            pos = strcasestr(head_buff, "Accept-Ranges:");
+            if (pos != NULL){
+                header->accept_ranges = 1;
+            }
 
-			if (req->is_hdfs == 1) {
-				char *first = strcasestr(head_buff, "result:");
-				if (first != NULL){
-					first = strchr(first, ':');
-					first++;
-					int res_code = atoi(first);
-					header->hdfs_code = res_code;
-				}
-			}
-		}
-	}
+            if (req->is_hdfs == 1) {
+                char *first = strcasestr(head_buff, "result:");
+                if (first != NULL){
+                    first = strchr(first, ':');
+                    first++;
+                    int res_code = atoi(first);
+                    header->hdfs_code = res_code;
+                }
+            }
+        }
+    }
 
-	cfs_free(head_buff);
-	close(sock);
+    cfs_free(head_buff);
+    close(sock);
 
-	return 0;
+    return 0;
 }
 
-	static int
+    static int
 cfs_socket_init(const char *req_host, const short port)
 {
-	int sock;
-	int res;
-	char req_ip[32] = {0};
-	res = cfs_parse_domain(req_host, req_ip);
-	if (res == -1){
-		cfs_log(ERR, "cfs_parse_domain error");
-		return -1;
-	}
-	if ((sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0){
-		cfs_log(ERR, "socket_init error");
-		return -1;
-	}
+    int sock;
+    int res;
+    char req_ip[32] = {0};
+    res = cfs_parse_domain(req_host, req_ip);
+    if (res == -1){
+        cfs_log(ERR, "cfs_parse_domain error");
+        return -1;
+    }
+    if ((sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0){
+        cfs_log(ERR, "socket_init error");
+        return -1;
+    }
 
-	struct sockaddr_in servaddr;
-	memset(&servaddr, 0, sizeof(servaddr));
-	servaddr.sin_family = AF_INET;
-	servaddr.sin_port = htons(port);
-	servaddr.sin_addr.s_addr = inet_addr(req_ip);
+    struct sockaddr_in servaddr;
+    memset(&servaddr, 0, sizeof(servaddr));
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_port = htons(port);
+    servaddr.sin_addr.s_addr = inet_addr(req_ip);
 
-	int i;
-	for (i = 1; i <= 3; ++i)
-	{
-		if (connect(sock, (struct sockaddr*)&servaddr, sizeof(servaddr)) != -1){
-			res = 0;
-			break;
-		}else{
-			cfs_log(ERR, "connect server error %ds reconnect", i);
-			sleep(i);
-			res = -1;
-		}
-	}
-	if (res == -1){
-		cfs_log(ERR, "connect server error %s:%d failed", req_ip, port);
-		close(sock);
-		return -1;
-	}
+    int i;
+    for (i = 1; i <= 3; ++i)
+    {
+        if (connect(sock, (struct sockaddr*)&servaddr, sizeof(servaddr)) != -1){
+            res = 0;
+            break;
+        }else{
+            cfs_log(ERR, "connect server error %ds reconnect", i);
+            sleep(i);
+            res = -1;
+        }
+    }
+    if (res == -1){
+        cfs_log(ERR, "connect server error %s:%d failed", req_ip, port);
+        close(sock);
+        return -1;
+    }
 
-	return sock;
+    return sock;
 }
 
-	static int 
+    static int 
 cfs_parse_domain(const char *domain, char *dest)
 {
-	struct hostent *h;
-	if ((h = gethostbyname(domain)) == NULL){
-		return -1;
-	}
-	char ips[32] = {0};
-	sprintf(ips, "%d.%d.%d.%d",
-			(h->h_addr_list[0][0]&0x00ff),
-			(h->h_addr_list[0][1]&0x00ff),
-			(h->h_addr_list[0][2]&0x00ff),
-			(h->h_addr_list[0][3]&0x00ff));
-	strcpy(dest, ips);
-	return 0;
+    struct hostent *h;
+    if ((h = gethostbyname(domain)) == NULL){
+        return -1;
+    }
+    char ips[32] = {0};
+    sprintf(ips, "%d.%d.%d.%d",
+            (h->h_addr_list[0][0]&0x00ff),
+            (h->h_addr_list[0][1]&0x00ff),
+            (h->h_addr_list[0][2]&0x00ff),
+            (h->h_addr_list[0][3]&0x00ff));
+    strcpy(dest, ips);
+    return 0;
 }
 
-	static void 
+    static void 
 cfs_config_init(int argc, char **argv)
 {
-	char config_name[64] = {0};
-	char *data           = NULL;
-	int  p               = 0;
+    char config_name[64] = {0};
+    char *data           = NULL;
+    int  p               = 0;
 
-	strcpy(g_config->app_name, basename(argv[0]));
-	if (argv[1] != NULL) {
-		strcpy(config_name, argv[1]);
-	}else {
-		sprintf(config_name, "%s.conf", g_config->app_name);
-	}
+    strcpy(g_config->app_name, basename(argv[0]));
+    if (argv[1] != NULL) {
+        strcpy(config_name, argv[1]);
+    }else {
+        sprintf(config_name, "%s.conf", g_config->app_name);
+    }
 
-	dictionary *ini = iniparser_load(config_name);
-	if (ini == NULL) {
-		ERR_EXIT("load config file failed");
-	}
+    dictionary *ini = iniparser_load(config_name);
+    if (ini == NULL) {
+        ERR_EXIT("load config file failed");
+    }
 
-	data = iniparser_getstr(ini, "origin:host");
-	if (data != NULL) {
-		g_config->origin->host = strdup(data);
-		char pattern[] = "(\\d{1,2}|1\\d|2[0-4]\\d|25[0-5])\\.(\\d{1,2}|1\\d\\d|2[0-4]\\d|25[0-5])\\.(\\d{1,2}|1\\d\\d|2[0-4]\\d|25[0-5])\\.(\\d{1,2}|1\\d\\d|2[0-4]\\d|25[0-5])";
-		int res = cfs_preg_match(pattern, data);
-		if (res < 0) {
-			if (res == PCRE_ERROR_NOMATCH){
-				if (cfs_parse_domain(data, g_config->origin->ip) < 0){
-					ERR_EXIT("[config] Get origin:host ip error");
-				}
-			}
-		}else{
-			strcpy(g_config->origin->ip, data);
-		}
-	}else{
-		ERR_EXIT("[config] Get origin:host error");
-	}
-	p = iniparser_getint(ini, "origin:port", -1);
-	if (p == -1 || p > 65535){
-		ERR_EXIT("[config] origin:port config error");
-	}
-	g_config->origin->port = p;
-	data = iniparser_getstr(ini, "origin:user");
-	if (data != NULL) {
-		g_config->origin->username = strdup(data);
-	}else{
-		ERR_EXIT("[config] origin:user config error");
-	}
-	data = iniparser_getstr(ini, "origin:password");
-	if (data != NULL) {
-		g_config->origin->password = strdup(data);
-	}else{
-		ERR_EXIT("[config] origin:password config error");
-	}
-	data = iniparser_getstr(ini, "origin:download");
-	if (data != NULL) {
-		g_config->origin->api_download = strdup(data);
-	}else{
-		ERR_EXIT("[config] origin:download config error");
-	}
+    data = iniparser_getstr(ini, "origin:host");
+    if (data != NULL) {
+        g_config->origin->host = strdup(data);
+        char pattern[] = "(\\d{1,2}|1\\d|2[0-4]\\d|25[0-5])\\.(\\d{1,2}|1\\d\\d|2[0-4]\\d|25[0-5])\\.(\\d{1,2}|1\\d\\d|2[0-4]\\d|25[0-5])\\.(\\d{1,2}|1\\d\\d|2[0-4]\\d|25[0-5])";
+        int res = cfs_preg_match(pattern, data);
+        if (res < 0) {
+            if (res == PCRE_ERROR_NOMATCH){
+                if (cfs_parse_domain(data, g_config->origin->ip) < 0){
+                    ERR_EXIT("[config] Get origin:host ip error");
+                }
+            }
+        }else{
+            strcpy(g_config->origin->ip, data);
+        }
+    }else{
+        ERR_EXIT("[config] Get origin:host error");
+    }
+    p = iniparser_getint(ini, "origin:port", -1);
+    if (p == -1 || p > 65535){
+        ERR_EXIT("[config] origin:port config error");
+    }
+    g_config->origin->port = p;
+    data = iniparser_getstr(ini, "origin:user");
+    if (data != NULL) {
+        g_config->origin->username = strdup(data);
+    }else{
+        ERR_EXIT("[config] origin:user config error");
+    }
+    data = iniparser_getstr(ini, "origin:password");
+    if (data != NULL) {
+        g_config->origin->password = strdup(data);
+    }else{
+        ERR_EXIT("[config] origin:password config error");
+    }
+    data = iniparser_getstr(ini, "origin:download");
+    if (data != NULL) {
+        g_config->origin->api_download = strdup(data);
+    }else{
+        ERR_EXIT("[config] origin:download config error");
+    }
 
-	// origindownload rate
-	data = iniparser_getstr(ini, "origin:rate");
-	if (data != NULL) {
-		strcpy(g_config->origin->rate, data);
-	}else{
-		memset(g_config->origin->rate, 0, sizeof(g_config->origin->rate));
-	}
-	data = iniparser_getstr(ini, "origin:cache");
-	if (data != NULL) {
-		strcpy(g_config->origin->cache, data);
-	}else{
-		memset(g_config->origin->cache, 0, sizeof(g_config->origin->cache));
-	}
+    // origindownload rate
+    data = iniparser_getstr(ini, "origin:rate");
+    if (data != NULL) {
+        strcpy(g_config->origin->rate, data);
+    }else{
+        memset(g_config->origin->rate, 0, sizeof(g_config->origin->rate));
+    }
+    data = iniparser_getstr(ini, "origin:cache");
+    if (data != NULL) {
+        strcpy(g_config->origin->cache, data);
+    }else{
+        memset(g_config->origin->cache, 0, sizeof(g_config->origin->cache));
+    }
 
-	p = iniparser_getint(ini, "global:log_size", -1);
-	if (p == -1){
-		ERR_EXIT("[config] global:log_size config error");
-	}
-	g_config->log_size = p * 1024 * 1024;
-	data = iniparser_getstr(ini, "global:document");
-	if (data != NULL) {
-		g_config->work_dir = strdup(data);
-		if (chdir(g_config->work_dir)){
-			ERR_EXIT("change dir error");
-		}
-	}else{
-		ERR_EXIT("[config] global:document config error");
-	}
-	data = iniparser_getstr(ini, "global:log_path");
-	if (data != NULL) {
-		g_config->log_path = strdup(data);
-	}else{
-		ERR_EXIT("[config] global:log_path config error");
-	}
-	p = iniparser_getint(ini, "global:threads", -1);
-	if (p == -1) {
-		ERR_EXIT("[config] global:threads config error");
-	}
-	g_config->thread_size = p;
-	p = iniparser_getint(ini, "global:package_size", -1);
-	if (p == -1) {
-		ERR_EXIT("[config] global:package_size config error");
-	}
-	g_config->package_size = p * 1024;
+    p = iniparser_getint(ini, "global:log_size", -1);
+    if (p == -1){
+        ERR_EXIT("[config] global:log_size config error");
+    }
+    g_config->log_size = p * 1024 * 1024;
+    data = iniparser_getstr(ini, "global:document");
+    if (data != NULL) {
+        g_config->work_dir = strdup(data);
+        if (chdir(g_config->work_dir)){
+            ERR_EXIT("change dir error");
+        }
+    }else{
+        ERR_EXIT("[config] global:document config error");
+    }
+    data = iniparser_getstr(ini, "global:log_path");
+    if (data != NULL) {
+        g_config->log_path = strdup(data);
+    }else{
+        ERR_EXIT("[config] global:log_path config error");
+    }
+    p = iniparser_getint(ini, "global:threads", -1);
+    if (p == -1) {
+        ERR_EXIT("[config] global:threads config error");
+    }
+    g_config->thread_size = p;
+    p = iniparser_getint(ini, "global:package_size", -1);
+    if (p == -1) {
+        ERR_EXIT("[config] global:package_size config error");
+    }
+    g_config->package_size = p * 1024;
 
-	// run time user group
-	data = iniparser_getstr(ini, "global:username");
-	if (data != NULL) {
-		g_config->username = strdup(data);
-	}else{
-		ERR_EXIT("[config] global:username config error");
-	}
+    // run time user group
+    data = iniparser_getstr(ini, "global:username");
+    if (data != NULL) {
+        g_config->username = strdup(data);
+    }else{
+        ERR_EXIT("[config] global:username config error");
+    }
 
-	data = iniparser_getstr(ini, "global:groupname");
-	if (data != NULL) {
-		g_config->groupname = strdup(data);
-	}else{
-		ERR_EXIT("[config] global:groupname config error");
-	}
+    data = iniparser_getstr(ini, "global:groupname");
+    if (data != NULL) {
+        g_config->groupname = strdup(data);
+    }else{
+        ERR_EXIT("[config] global:groupname config error");
+    }
 
-	p = iniparser_getint(ini, "global:io-utilization", -1);
-	if (p == -1) {
-		ERR_EXIT("[config] global:io utilization config error");
-	}
-	g_config->io_utilization = p;
+    p = iniparser_getint(ini, "global:io-utilization", -1);
+    if (p == -1) {
+        ERR_EXIT("[config] global:io utilization config error");
+    }
+    g_config->io_utilization = p;
 
-	p = iniparser_getint(ini, "global:io-port", -1);
-	if (p == -1) {
-		ERR_EXIT("[config] global:io port config error");
-	}
-	g_config->io_port = p;
+    p = iniparser_getint(ini, "global:io-port", -1);
+    if (p == -1) {
+        ERR_EXIT("[config] global:io port config error");
+    }
+    g_config->io_port = p;
 
-	data = iniparser_getstr(ini, "global:io-host");
-	if (data != NULL) {
-		// in_addr_t r1 = inet_addr(data);
-		strcpy(g_config->io_host, data);
-	}else{
-		ERR_EXIT("[config] mysql:host config error");
-	}
+    data = iniparser_getstr(ini, "global:io-host");
+    if (data != NULL) {
+        // in_addr_t r1 = inet_addr(data);
+        strcpy(g_config->io_host, data);
+    }else{
+        ERR_EXIT("[config] mysql:host config error");
+    }
 
-	p = iniparser_getint(ini, "global:server-port", -1); // addede for server-port
-	if(p == -1)
-	{
-		ERR_EXIT("[config] global:server port config error");
-	}
-	g_config->server_port = p;
+    p = iniparser_getint(ini, "global:server-port", -1); // addede for server-port
+    if(p == -1)
+    {
+        ERR_EXIT("[config] global:server port config error");
+    }
+    g_config->server_port = p;
 
-	data = iniparser_getstr(ini, "mysql:host");
-	if (data != NULL) {
-		g_config->mysql->host = strdup(data);
-	}else{
-		ERR_EXIT("[config] mysql:host config error");
-	}
+    p = iniparser_getint(ini, "global:cfs_nums", -1); // addede for cfs-nums
+    if(p == -1)
+    {
+        ERR_EXIT("[config] global:cfs_nums config error");
+    }
+    g_config->cfsedge_nums = p;
 
-	data = iniparser_getstr(ini, "mysql:user");
-	if (data != NULL) {
-		g_config->mysql->username = strdup(data);
-	}else{
-		ERR_EXIT("[config] mysql:user config error");
-	}
+    data = iniparser_getstr(ini, "mysql:host");
+    if (data != NULL) {
+        g_config->mysql->host = strdup(data);
+    }else{
+        ERR_EXIT("[config] mysql:host config error");
+    }
 
-	data = iniparser_getstr(ini, "mysql:password");
-	if (data != NULL) {
-		g_config->mysql->password = strdup(data);
-	}else{
-		ERR_EXIT("[config] mysql:password config error");
-	}
+    data = iniparser_getstr(ini, "mysql:user");
+    if (data != NULL) {
+        g_config->mysql->username = strdup(data);
+    }else{
+        ERR_EXIT("[config] mysql:user config error");
+    }
 
-	p = iniparser_getint(ini, "mysql:port", -1);
-	if (p == -1){
-		ERR_EXIT("[config] mysql:port config error");
-	}
-	g_config->mysql->port = p;
+    data = iniparser_getstr(ini, "mysql:password");
+    if (data != NULL) {
+        g_config->mysql->password = strdup(data);
+    }else{
+        ERR_EXIT("[config] mysql:password config error");
+    }
 
-	data = iniparser_getstr(ini, "mysql:database");
-	if (data != NULL) {
-		g_config->mysql->database = strdup(data);
-	}else{
-		ERR_EXIT("[config] mysql:database config error");
-	}
+    p = iniparser_getint(ini, "mysql:port", -1);
+    if (p == -1){
+        ERR_EXIT("[config] mysql:port config error");
+    }
+    g_config->mysql->port = p;
 
-	int cfs_id = 0; // added for 
-	for(; cfs_id < 20; cfs_id++) //20 js just for test.
-	{
-		char cfs_item[64] = {0};
-		cfs_cfsedge_config_t *cfsedge = (cfs_cfsedge_config_t*)malloc(sizeof(cfs_cfsedge_config_t));
-		memset(cfsedge, 0 ,sizeof(cfs_cfsedge_config_t));
+    data = iniparser_getstr(ini, "mysql:database");
+    if (data != NULL) {
+        g_config->mysql->database = strdup(data);
+    }else{
+        ERR_EXIT("[config] mysql:database config error");
+    }
 
-		sprintf(cfs_item,"cfs%d:host",cfs_id);
-		data = iniparser_getstr(ini, cfs_item);
-		if (data != NULL) {
-			cfsedge->host = strdup(data);
-		}else{
-			char tmp[32] = {0};
-			sprintf(tmp, "[config] cfs%d:host config error",cfs_id);
-			cfs_free(cfsedge);
-			break;
-		}
+    int cfs_id = 0; // added for 
+    for(; cfs_id < g_config->cfsedge_nums; cfs_id++) //20 js just for test.
+    {
+        char cfs_item[64] = {0};
+        cfs_cfsedge_config_t *cfsedge = (cfs_cfsedge_config_t*)malloc(sizeof(cfs_cfsedge_config_t));
+        memset(cfsedge, 0 ,sizeof(cfs_cfsedge_config_t));
 
-		sprintf(cfs_item,"cfs%d:port",cfs_id);
-		p = iniparser_getint(ini, cfs_item, -1);
-		if (p != -1) {
-			cfsedge->port = p;
-		}else{
-			char tmp[32] = {0};
-			sprintf(tmp, "[config] cfs%d:port config error",cfs_id);
-			ERR_EXIT(tmp);
-		}
+        sprintf(cfs_item,"cfs%d:host",cfs_id);
+        data = iniparser_getstr(ini, cfs_item);
+        if (data != NULL) {
+            cfsedge->host = strdup(data);
+        }else{
+            char tmp[32] = {0};
+            sprintf(tmp, "[config] cfs%d:host config error",cfs_id);
+            cfs_free(cfsedge);
+            break;
+        }
 
-		sprintf(cfs_item,"cfs%d:key",cfs_id);
-		data = iniparser_getstr(ini, cfs_item);
-		if (data != NULL) {
-			cfsedge->key = strdup(data);
-		}else{
-			char tmp[32] = {0};
-			sprintf(tmp, "[config] cfs%d:key config error",cfs_id);
-			ERR_EXIT(tmp);
-		}
+        sprintf(cfs_item,"cfs%d:port",cfs_id);
+        p = iniparser_getint(ini, cfs_item, -1);
+        if (p != -1) {
+            cfsedge->port = p;
+        }else{
+            char tmp[32] = {0};
+            sprintf(tmp, "[config] cfs%d:port config error",cfs_id);
+            ERR_EXIT(tmp);
+        }
 
-		if(cfs_id == 0)
-		{
-			g_config->cfsedge = cfsedge;
-		}
-		else
-		{
-			cfsedge->next = g_config->cfsedge->next;
-			g_config->cfsedge->next = cfsedge;
-		}
-	}
+        sprintf(cfs_item,"cfs%d:key",cfs_id);
+        data = iniparser_getstr(ini, cfs_item);
+        if (data != NULL) {
+            cfsedge->key = strdup(data);
+        }else{
+            char tmp[32] = {0};
+            sprintf(tmp, "[config] cfs%d:key config error",cfs_id);
+            ERR_EXIT(tmp);
+        }
 
-	iniparser_freedict(ini);
+        if(cfs_id == 0)
+        {
+            g_config->cfsedge = cfsedge;
+        }
+        else
+        {
+            cfsedge->next = g_config->cfsedge->next;
+            g_config->cfsedge->next = cfsedge;
+        }
+    }
+
+    iniparser_freedict(ini);
 }
 
-	static void
+    static void
 cfs_init()
 {
-	signal(SIGUSR1, signal_hander);
-	g_quit          = 0;
-	g_download_stat = 0;
-	g_user_agent    = NULL;
+    signal(SIGUSR1, signal_hander);
+    g_quit          = 0;
+    g_download_stat = 0;
+    g_user_agent    = NULL;
 
-	pthread_mutex_init(&g_mutex_lock, NULL);
-	struct utsname uts;
-	if (uname(&uts) != 0) {
-		char agent[64] = {0};
-		sprintf(agent, "reacheyes cfs/%s (x86-Linux)", VERSION);
-		g_user_agent = (char *)cfs_malloc(strlen(agent) + 1);
-		strcpy(g_user_agent, agent);
-	}else{
-		char agent[64] = {0};
-		sprintf(agent, "reacheyes cfs/%s", VERSION);
-		int len = strlen(agent) + strlen(uts.sysname) + strlen(uts.release) + strlen(uts.machine) + strlen(uts.version) + 8;
-		g_user_agent = (char *)cfs_malloc(len);
-		sprintf(g_user_agent, "%s (%s %s %s; %s)", agent, uts.sysname, uts.release, uts.machine, uts.version);
-	}
+    pthread_mutex_init(&g_mutex_lock, NULL);
+    struct utsname uts;
+    if (uname(&uts) != 0) {
+        char agent[64] = {0};
+        sprintf(agent, "reacheyes cfs/%s (x86-Linux)", VERSION);
+        g_user_agent = (char *)cfs_malloc(strlen(agent) + 1);
+        strcpy(g_user_agent, agent);
+    }else{
+        char agent[64] = {0};
+        sprintf(agent, "reacheyes cfs/%s", VERSION);
+        int len = strlen(agent) + strlen(uts.sysname) + strlen(uts.release) + strlen(uts.machine) + strlen(uts.version) + 8;
+        g_user_agent = (char *)cfs_malloc(len);
+        sprintf(g_user_agent, "%s (%s %s %s; %s)", agent, uts.sysname, uts.release, uts.machine, uts.version);
+    }
 
-	struct passwd *pwd = getpwnam(g_config->username);
-	if (pwd == NULL) {
-		ERR_EXIT("config username is invalid");
-	}
+    struct passwd *pwd = getpwnam(g_config->username);
+    if (pwd == NULL) {
+        ERR_EXIT("config username is invalid");
+    }
 
-	struct group *grp = getgrnam(g_config->groupname);
-	if (pwd == NULL) {
-		ERR_EXIT("config groupname is invalid");
-	}
+    struct group *grp = getgrnam(g_config->groupname);
+    if (pwd == NULL) {
+        ERR_EXIT("config groupname is invalid");
+    }
 
-	if (setegid(grp->gr_gid) == -1) {
-		ERR_EXIT("set groupname is failed");
-	}
+    if (setegid(grp->gr_gid) == -1) {
+        ERR_EXIT("set groupname is failed");
+    }
 
-	if (seteuid(pwd->pw_uid) == -1) {
-		ERR_EXIT("set username is failed");
-	}
-	cfs_log(NOTICE, "Load Configure File Init Success");
+    if (seteuid(pwd->pw_uid) == -1) {
+        ERR_EXIT("set username is failed");
+    }
+    cfs_log(NOTICE, "Load Configure File Init Success");
 }   
 
-	static void     
+    static void     
 cfs_disk_init(MYSQL *conn_ptr, cfs_disk_t **disk_buff, unsigned long *len)
 {
-	MYSQL_ROW result_row = NULL;
-	char      sql[256]   = {0};
-	long      size;
-	int       i;
-	long      length;
+    MYSQL_ROW result_row = NULL;
+    char      sql[256]   = {0};
+    long      size;
+    int       i;
+    long      length;
 
-	MYSQL_RES *data_res = NULL;
-	sprintf(sql, "SELECT device, work, priority, id FROM %s ORDER BY priority ASC", T_CDN_DISK);
-	data_res = db_select(conn_ptr, sql);
+    MYSQL_RES *data_res = NULL;
+    sprintf(sql, "SELECT device, work, priority, id FROM %s ORDER BY priority ASC", T_CDN_DISK);
+    data_res = db_select(conn_ptr, sql);
 
-	my_ulonglong rows = mysql_num_rows(data_res);
-	length            = (long)rows;
+    my_ulonglong rows = mysql_num_rows(data_res);
+    length            = (long)rows;
 
-	if (length != 0){
-		// cfs_disk_t *disk = *disk_buff;
-		cfs_disk_t *disk = (cfs_disk_t *)cfs_malloc(sizeof(cfs_disk_t) * length);
-		for (i = 0; i < length; ++i)
-		{
-			result_row       = mysql_fetch_row(data_res);
-			disk[i].priority = (unsigned short)atoi(result_row[2]);
-			disk[i].id       = (unsigned int)atoi(result_row[3]);
+    if (length != 0){
+        // cfs_disk_t *disk = *disk_buff;
+        cfs_disk_t *disk = (cfs_disk_t *)cfs_malloc(sizeof(cfs_disk_t) * length);
+        for (i = 0; i < length; ++i)
+        {
+            result_row       = mysql_fetch_row(data_res);
+            disk[i].priority = (unsigned short)atoi(result_row[2]);
+            disk[i].id       = (unsigned int)atoi(result_row[3]);
 
-			size             = strlen(result_row[1]);
-			disk[i].work     = (char *)cfs_malloc(size + 1);
+            size             = strlen(result_row[1]);
+            disk[i].work     = (char *)cfs_malloc(size + 1);
 
-			strcpy(disk[i].work, result_row[1]);
+            strcpy(disk[i].work, result_row[1]);
 
-			size             = strlen(result_row[0]);
-			disk[i].device   = (char *)cfs_malloc(size + 1);
+            size             = strlen(result_row[0]);
+            disk[i].device   = (char *)cfs_malloc(size + 1);
 
-			strcpy(disk[i].device, result_row[0]);
-		}
-		*disk_buff = disk;
-		*len = length;
-	}
-	db_free_result(data_res);
+            strcpy(disk[i].device, result_row[0]);
+        }
+        *disk_buff = disk;
+        *len = length;
+    }
+    db_free_result(data_res);
 }
 
-	static void*    
+    static void*    
 signal_hander(int num)
 {
-	g_quit = 1;
-	cfs_log(NOTICE, "Receive exit signals USR1");
-	return (void *)0;
+    g_quit = 1;
+    cfs_log(NOTICE, "Receive exit signals USR1");
+    return (void *)0;
 }
 
-	static int
+    static int
 cfs_log(int level, char *fmt, ...)
 {
-	va_list argptr;
-	int     cnt;
-	char    buffer[2000]    = {0};
-	char    error_str[2048] = {0};
-	char    *dir_path       = NULL;
-	char    now_time[32]    = {0};
-	struct  stat log_info   = {0};
-	char    level_str[16]   = {0};
-	int     len;
+    va_list argptr;
+    int     cnt;
+    char    buffer[2000]    = {0};
+    char    error_str[2048] = {0};
+    char    *dir_path       = NULL;
+    char    now_time[32]    = {0};
+    struct  stat log_info   = {0};
+    char    level_str[16]   = {0};
+    int     len;
 
-	cfs_get_localtime(now_time);
-	len = strlen(g_config->log_path);
-	dir_path = (char *)malloc(len + 1);
-	if (dir_path == NULL) {
-		syslog(LOG_USER|LOG_INFO, "Malloc Log Path Memory Space Error");
-		return -1;
-	}
-	memset(dir_path, 0, len + 1);
-	memcpy(dir_path, g_config->log_path, len);
+    cfs_get_localtime(now_time);
+    len = strlen(g_config->log_path);
+    dir_path = (char *)malloc(len + 1);
+    if (dir_path == NULL) {
+        syslog(LOG_USER|LOG_INFO, "Malloc Log Path Memory Space Error");
+        return -1;
+    }
+    memset(dir_path, 0, len + 1);
+    memcpy(dir_path, g_config->log_path, len);
 
-	va_start(argptr, fmt);
-	cnt = vsprintf(buffer, fmt, argptr);
-	va_end(argptr);
+    va_start(argptr, fmt);
+    cnt = vsprintf(buffer, fmt, argptr);
+    va_end(argptr);
 
-	switch (level) {
-		case ERR:
-			strcpy(level_str, "ERROR");
-			break;
-		case WARN:
-			strcpy(level_str, "WARN");
-			break;
-		case NOTICE:
-			strcpy(level_str, "NOTICE");
-			break;
-		default:
-			strcpy(level_str, "NOTICE");
-			break;
-	}
+    switch (level) {
+        case ERR:
+            strcpy(level_str, "ERROR");
+            break;
+        case WARN:
+            strcpy(level_str, "WARN");
+            break;
+        case NOTICE:
+            strcpy(level_str, "NOTICE");
+            break;
+        default:
+            strcpy(level_str, "NOTICE");
+            break;
+    }
 
 #if 0
-	sprintf(error_str, "%s [%s]%d:%s(%s)--%s\n", now_time, level_str, __LINE__, __FUNCTION__, __FILE__, buffer);
+    sprintf(error_str, "%s [%s]%d:%s(%s)--%s\n", now_time, level_str, __LINE__, __FUNCTION__, __FILE__, buffer);
 #else
-	sprintf(error_str, "%s [%s] %s\n", now_time, level_str, buffer);
+    sprintf(error_str, "%s [%s] %s\n", now_time, level_str, buffer);
 #endif
-	if (access(dirname(dir_path), 0) != 0) {
-		if (cfs_mkrdir(dir_path, 0777) == -1) {
-			ERR_EXIT("mkdir error");
-			return -1;
-		}
-	}
+    if (access(dirname(dir_path), 0) != 0) {
+        if (cfs_mkrdir(dir_path, 0777) == -1) {
+            ERR_EXIT("mkdir error");
+            return -1;
+        }
+    }
 
-	if ((stat(g_config->log_path, &log_info)) == 0){
-		if (log_info.st_size > (1024000 * 10)){
-			char tmp_log_name[1024] = {0};
-			struct tm *now_date = NULL;
-			time_t t = time(0);
-			now_date = localtime(&t);
-			sprintf(tmp_log_name, "%s.%04d%02d%02d%02d%02d%02d", g_config->log_path, now_date->tm_year + 1900, now_date->tm_mon + 1, now_date->tm_mday, \
-					now_date->tm_hour, now_date->tm_min, now_date->tm_sec);
-			if (rename(g_config->log_path, tmp_log_name) == -1){
-				syslog(LOG_USER|LOG_INFO, "log file rename file failed %s", strerror(errno));
-			}
-		}
-	}
-	FILE *fd = fopen(g_config->log_path, "a+");
-	if (fd != NULL) {
-		fwrite(error_str, strlen(error_str), 1, fd);
-		fclose(fd);
-	}else{
-		syslog(LOG_USER|LOG_INFO, "Open Log File %s", strerror(errno));
-	}
-	cfs_free(dir_path);
-	return(cnt);
+    if ((stat(g_config->log_path, &log_info)) == 0){
+        if (log_info.st_size > (1024000 * 10)){
+            char tmp_log_name[1024] = {0};
+            struct tm *now_date = NULL;
+            time_t t = time(0);
+            now_date = localtime(&t);
+            sprintf(tmp_log_name, "%s.%04d%02d%02d%02d%02d%02d", g_config->log_path, now_date->tm_year + 1900, now_date->tm_mon + 1, now_date->tm_mday, \
+                    now_date->tm_hour, now_date->tm_min, now_date->tm_sec);
+            if (rename(g_config->log_path, tmp_log_name) == -1){
+                syslog(LOG_USER|LOG_INFO, "log file rename file failed %s", strerror(errno));
+            }
+        }
+    }
+    FILE *fd = fopen(g_config->log_path, "a+");
+    if (fd != NULL) {
+        fwrite(error_str, strlen(error_str), 1, fd);
+        fclose(fd);
+    }else{
+        syslog(LOG_USER|LOG_INFO, "Open Log File %s", strerror(errno));
+    }
+    cfs_free(dir_path);
+    return(cnt);
 }
 
-	static int 
+    static int 
 cfs_preg_match(char pattern[], char str[])
 {
-	pcre            *re;
-	const char      *error;
-	int             erroffset;
-	int             res;
-	// char            pattern   [] = "(\\d{1,2}|1\\d|2[0-4]\\d|25[0-5])\\.(\\d{1,2}|1\\d\\d|2[0-4]\\d|25[0-5])\\.(\\d{1,2}|1\\d\\d|2[0-4]\\d|25[0-5])\\.(\\d{1,2}|1\\d\\d|2[0-4]\\d|25[0-5])";
-	re = pcre_compile(pattern, 0, &error, &erroffset, NULL);
-	if (re == NULL) {
-		cfs_log(WARN, "PCRE compilation failed at offset %d: %s", erroffset, error);
-		return -1;
-	}
+    pcre            *re;
+    const char      *error;
+    int             erroffset;
+    int             res;
+    // char            pattern   [] = "(\\d{1,2}|1\\d|2[0-4]\\d|25[0-5])\\.(\\d{1,2}|1\\d\\d|2[0-4]\\d|25[0-5])\\.(\\d{1,2}|1\\d\\d|2[0-4]\\d|25[0-5])\\.(\\d{1,2}|1\\d\\d|2[0-4]\\d|25[0-5])";
+    re = pcre_compile(pattern, 0, &error, &erroffset, NULL);
+    if (re == NULL) {
+        cfs_log(WARN, "PCRE compilation failed at offset %d: %s", erroffset, error);
+        return -1;
+    }
 
-	res = pcre_exec(re, NULL, str, strlen(str), 0, 0, NULL, 0);
-	if (re != NULL) {
-		free(re);
-		re = NULL;
-	}
-	return res;
+    res = pcre_exec(re, NULL, str, strlen(str), 0, 0, NULL, 0);
+    if (re != NULL) {
+        free(re);
+        re = NULL;
+    }
+    return res;
 }
 
-	static int 
+    static int 
 cfs_get_localtime(char *date_str)
 {
-	time_t t = time(0);
-	struct tm *now = localtime(&t);
-	sprintf(date_str, "%04d-%02d-%02d %02d:%02d:%02d", now->tm_year + 1900, \
-			now->tm_mon + 1, now->tm_mday, now->tm_hour, now->tm_min, now->tm_sec);
-	return 0;
+    time_t t = time(0);
+    struct tm *now = localtime(&t);
+    sprintf(date_str, "%04d-%02d-%02d %02d:%02d:%02d", now->tm_year + 1900, \
+            now->tm_mon + 1, now->tm_mday, now->tm_hour, now->tm_min, now->tm_sec);
+    return 0;
 }
 
-	void
+    void
 cfs_split(const char *str, const char delimiter, char **key, char **val)
 {
-	int len;
-	if (str == NULL)
-		return;
+    int len;
+    if (str == NULL)
+        return;
 
-	char *idx = strchr(str, delimiter);
-	if (idx == NULL) {
-		*key = str;
-		val = NULL;
-		return;
-	}
-	len = idx - str;
-	char *key_ptr = (char *)malloc(len + 1);
-	if (key_ptr == NULL) {
-		*key = *val = NULL;
-		return;
-	}
-	memset(key_ptr, 0, len + 1);
-	strncpy(key_ptr, str, len);
-	*key = key_ptr;
+    char *idx = strchr(str, delimiter);
+    if (idx == NULL) {
+        *key = str;
+        val = NULL;
+        return;
+    }
+    len = idx - str;
+    char *key_ptr = (char *)malloc(len + 1);
+    if (key_ptr == NULL) {
+        *key = *val = NULL;
+        return;
+    }
+    memset(key_ptr, 0, len + 1);
+    strncpy(key_ptr, str, len);
+    *key = key_ptr;
 
-	len = strlen(++idx);
-	char *val_ptr = (char *)malloc(len + 1);
-	if (val_ptr == NULL) {
-		*key = *val = NULL;
-		return;
-	}
-	memset(val_ptr, 0, len + 1);
-	strcpy(val_ptr, idx);
-	*val = val_ptr;
+    len = strlen(++idx);
+    char *val_ptr = (char *)malloc(len + 1);
+    if (val_ptr == NULL) {
+        *key = *val = NULL;
+        return;
+    }
+    memset(val_ptr, 0, len + 1);
+    strcpy(val_ptr, idx);
+    *val = val_ptr;
 }
 
-	void 
+    void 
 cfs_free(void *ptr)
 {
-	if (ptr != NULL) {
-		free(ptr);
-		ptr = NULL;
-	}
+    if (ptr != NULL) {
+        free(ptr);
+        ptr = NULL;
+    }
 }
 
-	void*
+    void*
 cfs_malloc(size_t size)
 {
-	void *ptr = malloc(size);
-	if (ptr == NULL) {
-		ERR_EXIT("malloc");
-	}
-	memset(ptr, 0, size);
-	return ptr;
+    void *ptr = malloc(size);
+    if (ptr == NULL) {
+        ERR_EXIT("malloc");
+    }
+    memset(ptr, 0, size);
+    return ptr;
 }
 
-	static int
+    static int
 cfs_iostats(const int fd, cfs_disk_t *disk, const unsigned long len, cfs_disk_t **result)
 {
-	int   i, size;
-	float io_util;
-	char  cmd_buff[64] = {0};
-	char  *chres       = NULL;
-	char  *idx         = NULL;
+    int   i, size;
+    float io_util;
+    char  cmd_buff[64] = {0};
+    char  *chres       = NULL;
+    char  *idx         = NULL;
 
-	for  (i = 0; i < len; ++i)
-	{
-		sprintf(cmd_buff, "IOSTAT %s", disk[i].device);
-		cfs_writen(fd, cmd_buff, strlen(cmd_buff));
-		// send command
-		cfs_readn(fd, &size, sizeof(size));
+    for  (i = 0; i < len; ++i)
+    {
+        sprintf(cmd_buff, "IOSTAT %s", disk[i].device);
+        cfs_writen(fd, cmd_buff, strlen(cmd_buff));
+        // send command
+        cfs_readn(fd, &size, sizeof(size));
 
-		// recv status
-		char *buff = cfs_malloc(size + 1);
-		cfs_readn(fd, buff, size);
-		chres = cfs_ioerror(buff);
-		// get iostat success ?
-		if (chres != NULL) {
-			cfs_log(WARN, "%s %s", cmd_buff, chres);
-			cfs_free(chres);
-			continue;
-		}
-		cfs_free(buff);
+        // recv status
+        char *buff = cfs_malloc(size + 1);
+        cfs_readn(fd, buff, size);
+        chres = cfs_ioerror(buff);
+        // get iostat success ?
+        if (chres != NULL) {
+            cfs_log(WARN, "%s %s", cmd_buff, chres);
+            cfs_free(chres);
+            continue;
+        }
+        cfs_free(buff);
 
-		// recv content
-		cfs_readn(fd, &size, sizeof(size));
-		buff = cfs_malloc(size + 1);
-		cfs_readn(fd, buff, size);
-		idx = strrchr(buff, ',');
-		io_util = atof(++idx);
-		cfs_free(buff);
-		if (io_util >= g_config->io_utilization) {
-			cfs_log(WARN, "'%s' utilization percent gt configure value %lf/%d", disk[i].device, io_util, g_config->io_utilization);
-			continue;
-		}else{
-			cfs_log(NOTICE, "select device %s %lf. %s work directory write", disk[i].device, io_util, disk[i].work);
-			*result = &disk[i];
-			break;
-		}
-	}
+        // recv content
+        cfs_readn(fd, &size, sizeof(size));
+        buff = cfs_malloc(size + 1);
+        cfs_readn(fd, buff, size);
+        idx = strrchr(buff, ',');
+        io_util = atof(++idx);
+        cfs_free(buff);
+        if (io_util >= g_config->io_utilization) {
+            cfs_log(WARN, "'%s' utilization percent gt configure value %lf/%d", disk[i].device, io_util, g_config->io_utilization);
+            continue;
+        }else{
+            cfs_log(NOTICE, "select device %s %lf. %s work directory write", disk[i].device, io_util, disk[i].work);
+            *result = &disk[i];
+            break;
+        }
+    }
 
-	return 0;
+    return 0;
 }
 
-	static char*
+    static char*
 cfs_ioerror(char *buff)
 {
-	// [412, 'command param error']
-	// [400, 'command is invalid']
-	// [404, 'not found']
-	// [301, 'data is null']
-	// [300, 'success']
-	char *key = NULL;
-	char *val = NULL;
+    // [412, 'command param error']
+    // [400, 'command is invalid']
+    // [404, 'not found']
+    // [301, 'data is null']
+    // [300, 'success']
+    char *key = NULL;
+    char *val = NULL;
 
-	cfs_split(buff, ' ', &key, &val);
-	int code = atoi(key);
-	cfs_free(key);
+    cfs_split(buff, ' ', &key, &val);
+    int code = atoi(key);
+    cfs_free(key);
 
-	switch (code) {
-		case 300:
-			cfs_free(val);
-			break;
-		case 301:
-		case 404:
-		case 400:
-		case 412:
-			return val;
-			break;
-	}
+    switch (code) {
+        case 300:
+            cfs_free(val);
+            break;
+        case 301:
+        case 404:
+        case 400:
+        case 412:
+            return val;
+            break;
+    }
 
-	return NULL;
+    return NULL;
 }
 
 void* cfs_server_run()
 {
-	int sockfd;
-	int err;
-	int connfd;
+    int sockfd;
+    int err;
+    int connfd;
 
-	struct sockaddr_in serv_addr;   
-	struct sockaddr_in cli_addr;  
-	socklen_t serv_len;
-	socklen_t cli_len;
+    struct sockaddr_in serv_addr;   
+    struct sockaddr_in cli_addr;  
+    socklen_t serv_len;
+    socklen_t cli_len;
 
-	if ((sockfd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0){
-		cfs_log(ERR, "cfs server socket error");
-		exit(-1);
-	}
-	cfs_log(NOTICE, "cfs server socket ok.");
-	printf("cfs server socket ok.\n");
-	memset(&serv_addr, 0, sizeof(serv_addr));
-	memset(&cli_addr, 0, sizeof(cli_addr));
+    if ((sockfd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0){
+        cfs_log(ERR, "cfs server socket error");
+        exit(-1);
+    }
+    cfs_log(NOTICE, "cfs server socket ok.");
+    printf("cfs server socket ok.\n");
+    memset(&serv_addr, 0, sizeof(serv_addr));
+    memset(&cli_addr, 0, sizeof(cli_addr));
 
-	serv_addr.sin_family = AF_INET;
-	serv_addr.sin_port = htons(g_config->server_port);
-	serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(g_config->server_port);
+    serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
-	serv_len = sizeof(serv_addr);
-	err = bind(sockfd, (struct sockaddr *)&serv_addr, serv_len);
-	if(err < 0)
-	{
-		cfs_log(ERR, "fail to bind");
-		exit(-1);
-	}
-	cfs_log(NOTICE, "cfs server bind ok.");
-	printf( "cfs server bind ok.\n");
+    serv_len = sizeof(serv_addr);
+    err = bind(sockfd, (struct sockaddr *)&serv_addr, serv_len);
+    if(err < 0)
+    {
+        cfs_log(ERR, "fail to bind");
+        exit(-1);
+    }
+    cfs_log(NOTICE, "cfs server bind ok.");
+    printf( "cfs server bind ok.\n");
 
-	err = listen(sockfd, LISTEN_NUMS);
-	if(err < 0)
-	{
-		cfs_log(ERR, "fail to listen");
-		exit(-1);
-	}
-	cfs_log(NOTICE, "cfs server listen ok.");
-	printf("cfs server listen ok.\n");
-	cli_len = sizeof(cli_addr);
-	while(1)
-	{
-		connfd = accept(sockfd, (struct sockaddr *)&cli_addr, &cli_len);
-		if(connfd < 0)
-		{
-			cfs_log(ERR, "fail to accept");
-			close(sockfd);
-			exit(-1);
-		}
-		cfs_log(NOTICE, "cfs server accept a new client.");
-		printf("cfs server accept a new client.,fd=%d\n",connfd);
-		pid_t child=fork();   
-		if(child==0)   
-		{      
-			close(sockfd);   
-			do_send_file(connfd);
-			close(connfd);
-			exit(0);   
-		}   
-		close(connfd);  
-	}
+    err = listen(sockfd, LISTEN_NUMS);
+    if(err < 0)
+    {
+        cfs_log(ERR, "fail to listen");
+        exit(-1);
+    }
+    cfs_log(NOTICE, "cfs server listen ok.");
+    printf("cfs server listen ok.\n");
+    cli_len = sizeof(cli_addr);
+    while(1)
+    {
+        connfd = accept(sockfd, (struct sockaddr *)&cli_addr, &cli_len);
+        if(connfd < 0)
+        {
+            cfs_log(ERR, "fail to accept");
+            close(sockfd);
+            exit(-1);
+        }
+        cfs_log(NOTICE, "cfs server accept a new client.");
+        printf("cfs server accept a new client.,fd=%d\n",connfd);
+        pid_t child=fork();   
+        if(child==0)   
+        {      
+            close(sockfd);   
+            do_send_file(connfd);
+            close(connfd);
+            exit(0);   
+        }   
+        close(connfd);  
+    }
 }
 
 static int do_send_file(int sockfd)
 {
-	long long data_size;
-	char rw_buf[4096]={0};
-	unsigned long ulres = 0;
-	unsigned long data_rds = 0;
-	FILE *filep; 
-	send_struct_t *sst_tmp;
-	int wnd = 0;
-	int rnd =0;
-	char *rdbuf = NULL;
+    long long data_size;
+    char rw_buf[4096]={0};
+    unsigned long ulres = 0;
+    unsigned long data_rds = 0;
+    FILE *filep; 
+    send_struct_t *sst_tmp;
+    int wnd = 0;
+    int rnd =0;
+    char *rdbuf = NULL;
 
-	rdbuf = (char*)malloc(sizeof(send_struct_t));
-	memset(rdbuf, 0, sizeof(send_struct_t));
-	rnd = cfs_readn(sockfd,rdbuf,sizeof(send_struct_t));
-	sst_tmp = (send_struct_t*)rdbuf;
+    rdbuf = (char*)malloc(sizeof(send_struct_t));
+    memset(rdbuf, 0, sizeof(send_struct_t));
+    rnd = cfs_readn(sockfd,rdbuf,sizeof(send_struct_t));
+    sst_tmp = (send_struct_t*)rdbuf;
 
-	if(rnd != sizeof(send_struct_t))
-	{
-		printf("%d,%d !=recve\n",__LINE__,rnd);
-		sst_tmp->file_exist_flag = 0;
-		sst_tmp->file_size = 0; 
+    if(rnd != sizeof(send_struct_t))
+    {
+        printf("%d,%d !=recve\n",__LINE__,rnd);
+        sst_tmp->file_exist_flag = 0;
+        sst_tmp->file_size = 0; 
 
-		wnd = cfs_writen(sockfd, (char*)sst_tmp, sizeof(send_struct_t));
+        wnd = cfs_writen(sockfd, (char*)sst_tmp, sizeof(send_struct_t));
 
-		printf("%d,write struct size=%d, sst_tmp->file_size=%llu, sst_tmp->file_exist_flag= %d\n",__LINE__,wnd, sst_tmp->file_size, sst_tmp->file_exist_flag);
-		free(rdbuf);
-		return -1;
-	}
-	else
-	{
-		printf("%d,%d ==write\n",__LINE__,rnd);
-		if(0 == access(sst_tmp->file_path, R_OK))
-		{
-			sst_tmp->file_exist_flag = 1;
-		}
-		sst_tmp->file_size = get_file_size(sst_tmp->file_path);
+        printf("%d,write struct size=%d, sst_tmp->file_size=%llu, sst_tmp->file_exist_flag= %d\n",__LINE__,wnd, sst_tmp->file_size, sst_tmp->file_exist_flag);
+        free(rdbuf);
+        return -1;
+    }
+    else
+    {
+        printf("%d,%d ==write\n",__LINE__,rnd);
+        if(0 == access(sst_tmp->file_path, R_OK))
+        {
+            sst_tmp->file_exist_flag = 1;
+        }
+        sst_tmp->file_size = get_file_size(sst_tmp->file_path);
 
-		wnd = cfs_writen(sockfd, (char*)sst_tmp, sizeof(send_struct_t));
-		printf("%d,write struct size=%d, sst_tmp->file_size=%llu, sst_tmp->file_exist_flag= %d\n",__LINE__,wnd, sst_tmp->file_size, sst_tmp->file_exist_flag);
+        wnd = cfs_writen(sockfd, (char*)sst_tmp, sizeof(send_struct_t));
+        printf("%d,write struct size=%d, sst_tmp->file_size=%llu, sst_tmp->file_exist_flag= %d\n",__LINE__,wnd, sst_tmp->file_size, sst_tmp->file_exist_flag);
 
-		if(sst_tmp->file_exist_flag == 0)
-		{
-			free(rdbuf);
-			return 0;
-		}
-	}
+        if(sst_tmp->file_exist_flag == 0)
+        {
+            free(rdbuf);
+            return 0;
+        }
+    }
 
-	data_size = sst_tmp->file_size;
-	filep = fopen(sst_tmp->file_path,"r");
-	free(rdbuf);
-	if(NULL == filep)
-	{
-		printf("file_path,%s:NULL == filep\n",sst_tmp->file_path);
-		fclose(filep);
-		return -1;
-	}
+    data_size = sst_tmp->limit;
+    filep = fopen(sst_tmp->file_path,"r");
+    free(rdbuf);
+    if(NULL == filep)
+    {
+        printf("file_path,%s:NULL == filep\n",sst_tmp->file_path);
+        fclose(filep);
+        return -1;
+    }
+    fseek(filep, sst_tmp->offset, SEEK_SET);//TODO:
 
-	while(ulres < data_size)  // send request files 
-	{
-		if((data_rds = fread(rw_buf, 1,sizeof(rw_buf), filep)) == -1)
-		{
-			cfs_log(ERR, "read file error");
-			fclose(filep);
-			return -1;
-		}
-		if(data_rds == 0)
-		{
-			sleep(3);
-			break;
-		}
-		printf("%d,fread data size=%lu\n",__LINE__,data_rds);
-		wnd = cfs_writen(sockfd, rw_buf, data_rds);
-		printf("%d,writen data size=%d\n",__LINE__,wnd);
-	}
+    while(ulres < data_size)  // send request files 
+    {
+        if((data_rds = fread(rw_buf, 1,sizeof(rw_buf), filep)) == -1)
+        {
+            cfs_log(ERR, "read file error");
+            fclose(filep);
+            return -1;
+        }
+        if(data_rds == 0)
+        {
+            sleep(3);
+            break;
+        }
+        printf("%d,fread data size=%lu\n",__LINE__,data_rds);
+        wnd = cfs_writen(sockfd, rw_buf, data_rds);
+        printf("%d,writen data size=%d\n",__LINE__,wnd);
+    }
 
-	printf("send data end.\n");
-	fclose(filep);
+    printf("send data end.\n");
+    fclose(filep);
 
-	return 0;
+    return 0;
 }
 
 
 static unsigned long get_file_size(const char *path)
 {
-	long long filesize = -1;	
-	struct stat statbuff;
-	if(stat(path, &statbuff) < 0){
-		return filesize;
-	}else{
-		filesize = statbuff.st_size;
-	}
-	return filesize;
+    long long filesize = -1;	
+    struct stat statbuff;
+    if(stat(path, &statbuff) < 0){
+        return filesize;
+    }else{
+        filesize = statbuff.st_size;
+    }
+    return filesize;
 }
