@@ -16,25 +16,24 @@ enum {ERR, WARN, NOTICE};
 
 typedef struct file_part
 {
-	int flag;      //record if this part is download ok:0--not be download;-1-- failed; 1--ok ; 2-- is downloading
-	char pathname[256];
-	long int offset;
-	long int data_size;
-//	struct file_part *next;
+	int         flag;      //record if this part is download ok:0--not be download;-1-- failed; 1--ok ; 2-- is downloading
+	char        pathname[256];
+	long int    offset;
+	long int    data_size;
 }file_part_t;
 
 typedef struct cfs_node_record 
 {
-    int flag;       //record if the cfsnode host:port has file_path[256],flag--0,not exist;flag--1,exist.
-    char host[256];
-    short  port;
-    char file_path[256];
+    int         flag;       //record if the cfsnode host:port has file_path[256],flag--0,not exist;flag--1,exist.
+    char        host[256];
+    short       port;
+    char        file_path[256];
 }cfs_node_record_t;
 
 typedef struct my_thread_arg { // thread struct 
-    file_part_t *fpt;
-    cfs_node_record_t  *cnrt;
-	int         *nthread; 
+    file_part_t         *fpt;
+    cfs_node_record_t   *cnrt;
+	int                 *nthread; 
 } my_cfs_thread_arg_t;
 
 typedef struct cfs_req {
@@ -49,11 +48,11 @@ typedef struct cfs_req {
 
 typedef struct send_struct
 {    
-	int file_exist_flag;
-	char file_path[256];
-	long long unsigned file_size;
-    long int  offset;
-    long int data_size;
+	int                 file_exist_flag;
+	char                file_path[256];
+	long long unsigned  file_size;
+    long int            offset;
+    long int            data_size;
 }send_struct_t;
 
 typedef struct cfs_http_header {
@@ -160,5 +159,5 @@ void   cfs_split(char *str, const char delimiter, char **key, char **val);
 
 void* cfs_server_run();
 static unsigned long get_file_size(const char *path);
-static int do_send_file(int sockfd);
+static void* do_send_file(void* params);
 #endif
