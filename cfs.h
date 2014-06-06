@@ -51,7 +51,7 @@ typedef struct send_struct
 {    
 	int file_exist_flag;
 	char file_path[256];
-	long long file_size;
+	long long unsigned file_size;
     long int  offset;
     long int data_size;
 }send_struct_t;
