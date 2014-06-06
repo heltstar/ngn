@@ -150,6 +150,7 @@ int main(int argc, char **argv)
 			req_record->is_update = atoi(result_row[3]);
 
 			cfs_http_header_t header = {0};
+            goto test; 
 			int nres = cfs_get_header(req_record, &header);
 			if (nres == 0){            
 				// printf("path=%s\nsize=%lld\nhost=%s\napi=%s\nupdate=%d\nhdfs=%d\nhhttp=%d\nhttp=%d\n", 
@@ -160,12 +161,16 @@ int main(int argc, char **argv)
 				if (((header.http_code == 200 || header.http_code == 206) && req_record->is_hdfs == 1 && header.hdfs_code == 1000) || 
 						((header.http_code == 200 || header.http_code == 206) && req_record->is_hdfs == 0)){
 					req_record->file_size = header.content_length;
-	
+test:	
+
+                    //header.content_length = 107394336; // just for test:vbox.exe
+                    header.content_length = 1116778015; // just for test:vbox.exe
+
                     cfs_cfsedge_config_t *pccc = g_config->cfsedge;// first try to get resources from other cfs nodes.
                     if(NULL != pccc)
                     {
-                        printf("try to get file(file_path=%s) from cfsnode\ncfs_download start\n",req_record->req_path);
-                        int flg = my_cfs_download(pccc, req_record->req_path, header.content_length);
+                        printf("try to get file(file_path=%s) from cfsnode\ncfs_download start\n",result_row[1]);
+                        int flg = my_cfs_download(pccc, result_row[1], header.content_length);
                         if(flg == 0)
                         {
                             printf("cfs_download success...\n");
@@ -471,8 +476,9 @@ my_cfs_download(cfs_cfsedge_config_t *pccc, char *file_path, long long file_size
     int nthread     = 0;
     int max_threads = g_config->thread_size;
     int i = 0;
+    int cnt = 0;
     long package_nums;
-    long long  pkg_size = g_config->package_size * 1024;
+    long long  pkg_size = g_config->package_size;
     char local_file_path[256] = {0};
 
     sprintf(local_file_path,"%s%s", g_config->work_dir, file_path);
@@ -492,6 +498,7 @@ my_cfs_download(cfs_cfsedge_config_t *pccc, char *file_path, long long file_size
     {
         package_nums = file_size/pkg_size + 1;
     }
+    printf("(line:%d)g_config->package_size=%lld, pkg_size = %lld, package_nums=%ld\n",__LINE__, g_config->package_size, pkg_size, package_nums);
     file_part_t *fpt =(file_part_t*)malloc(package_nums * sizeof(file_part_t));
     if(fpt == NULL)
     {
@@ -501,7 +508,6 @@ my_cfs_download(cfs_cfsedge_config_t *pccc, char *file_path, long long file_size
     memset(fpt, 0, package_nums * sizeof(file_part_t));
     for(i=0; i< package_nums; i++)
     {
-        //fpt[i].file_part_id = i; //  
         fpt[i].flag = 0;      
         strcpy(fpt[i].pathname, file_path);
         fpt[i].offset = i * pkg_size;
@@ -513,6 +519,7 @@ my_cfs_download(cfs_cfsedge_config_t *pccc, char *file_path, long long file_size
         {
             fpt[i].data_size = file_size % pkg_size ;
         }
+        printf("(%d)fpt[%d].data_size = %ld\n",__LINE__,i, fpt[i].data_size);
     }
 
     //   init cfs node part struct
@@ -529,37 +536,73 @@ my_cfs_download(cfs_cfsedge_config_t *pccc, char *file_path, long long file_size
         strcpy(cnr[i].host, pccc->host);
         strcpy(cnr[i].file_path,file_path); 
         cnr[i].port = pccc->port;
+        printf("(%d)%d--host:port -->%s:%d\n",__LINE__, i, cnr[i].host, cnr[i].port);
     }
 
-    while(file_size > 0)
+    while(1)
     {
+        cnt %= g_config->cfsedge_nums;
         if (nthread >= max_threads) {
+            printf("sleep 1 second\n");
             sleep(1);
             continue;
         }
 
         my_cfs_thread_arg_t *args = (my_cfs_thread_arg_t *)malloc(sizeof(my_cfs_thread_arg_t));
         if (args == NULL){
+            printf("args == NULL\n");
+            free(fpt);
+            free(cnr);
             return -1;
-        }
-
-        for(i=0; i < g_config->cfsedge_nums; i++)
-        {
-            if(cnr[i].flag == 1)
-            {
-                args->cnrt = cnr[i];
-                break;
-            }
         }
 
         for(i=0; i < package_nums; i++)
         {
-            if(fpt[i].flag == 0)
+            if(fpt[i].flag == 0 || fpt[i].flag == -1)
             {
-                args->fpt = fpt[i];
+                args->fpt = (file_part_t *)&fpt[i];
+				pthread_mutex_lock(&g_mutex_lock);
+				args->fpt->flag = 2;
+				pthread_mutex_unlock(&g_mutex_lock);
                 break;
             }
         }
+
+        if(i == package_nums)
+        {
+            printf("i == package_nums,i = %d \n", i);
+            free(args);
+            break;
+        }
+
+        int tmp=0;
+        for(i=cnt; tmp < g_config->cfsedge_nums; tmp++)
+        {
+            if(cnr[i].flag == 1)
+            {
+                args->cnrt = (cfs_node_record_t*)&cnr[i];
+                break;
+            }
+            i++;
+            i %= g_config->cfsedge_nums;
+        }
+        if(tmp == g_config->cfsedge_nums)
+        {
+            pthread_mutex_lock(&g_mutex_lock);
+            g_download_stat = 1;
+            pthread_mutex_unlock(&g_mutex_lock);
+
+            free(args);
+            printf("tmp == g_config->cfsedge_nums ,tmp = %d \n", tmp);
+            goto end;
+        }
+        args->nthread = &nthread;
+
+        printf("\n[\ndownload pthread is num: %d, nthread=%d\n",cnt++, nthread);
+        printf("cnrt->host=%s, cnrt->port=%d\n",args->cnrt->host, args->cnrt->port);
+        printf("cnrt->file_path=%s, cnrt->flag=%d\n",args->cnrt->file_path, args->cnrt->flag);
+        printf("fpt->flag=%d, fpt->pathname=%s\n",args->fpt->flag, args->fpt->pathname);
+        printf("fpt->offset=%ld, fpt->data_size=%ld\n]\n",args->fpt->offset, args->fpt->data_size);
 
         pthread_t tid;
         int res = pthread_create(&tid, NULL, my_cfs_download_part, (void *)args);
@@ -569,27 +612,36 @@ my_cfs_download(cfs_cfsedge_config_t *pccc, char *file_path, long long file_size
                 nthread++;
             pthread_mutex_unlock(&g_mutex_lock);
         }
-        file_size -= pkg_size;
     }
 
     // wait thread all download done
     while (!(nthread == 0)) {
         if (file_size > (30 * 1024 * 1024)){
+            printf("sleep 5 second\n");
             sleep(5);
         }else if (file_size > (5 * 1024 * 1024)){
+            printf("sleep 1 second\n");
             sleep(1);
         }else{
+            printf("sleep 0.25 second\n");
             usleep(250000);
         }
     }
 
+end:
     // download failed delete temp file
     if (g_download_stat == 1){
-        cfs_log(NOTICE, "download %s %s failed", file_path);
-        unlink(file_path);
+        cfs_log(NOTICE, "download %s failed", file_path);
+        printf("(line:%d)download %s failed\n", __LINE__, file_path);
+        free(fpt);
+        free(cnr);
+//        unlink(file_path); //TODO:now just for test
         return -1;
     }
 
+    printf("(%d)download %s success\n",__LINE__, file_path);
+    free(fpt);
+    free(cnr);
     return 0;
 }
     static ssize_t
@@ -906,31 +958,31 @@ my_cfs_download_part(void *params)
 {
     my_cfs_thread_arg_t *args  = (my_cfs_thread_arg_t *)params;
     send_struct_t sst;
-    void   *recv_buff       = NULL;
+    char recv_buff[4096] ={0};
     int wnd,rnd;
     int nwrite;
     int fd;
+    char download_path[256]= {0};
 
-    recv_buff = (void *)malloc(4096);
-    if (recv_buff == NULL) {
-        my_cfs_exit_download(args, NULL, -1);
-        return (void *)0;
-    }
-    memset(recv_buff, 0, 4096);
+//    args->fpt->flag = 2; //this file part is downloading 
 
-    int sock = cfs_socket_init(args->cnrt.host, args->cnrt.port);
+    int sock = cfs_socket_init(args->cnrt->host, args->cnrt->port);
     if (sock < 0) {
+        printf("(line:%d)cfs_socket_init error\n",__LINE__);
         pthread_mutex_lock(&g_mutex_lock);
-        g_download_stat = 1;
+        //g_download_stat = 1;
+        args->fpt->flag = -1; //this file part 
         pthread_mutex_unlock(&g_mutex_lock);
-        goto clean;
+
+        my_cfs_exit_download(args, NULL, -1);
+        return (void*)-1;
     }
 
     sst.file_exist_flag = 0;
     sst.file_size = 0;
-    strcpy(sst.file_path,args->cnrt.file_path);
-    sst.offset = args->fpt.offset;
-    sst.data_size = args->fpt.data_size;
+    strcpy(sst.file_path,args->cnrt->file_path);
+    sst.offset = args->fpt->offset;
+    sst.data_size = args->fpt->data_size;
     printf("%d,sizoef(sst)=%lu\n",__LINE__,sizeof(sst));
 
     wnd = cfs_writen(sock, &sst, sizeof(sst));
@@ -941,55 +993,78 @@ my_cfs_download_part(void *params)
     if(rnd != sizeof(sst))
     {
         printf("error.,rnd=%d\n",rnd);
-        close(sock);
-        return (void*)-1;
+        args->fpt->flag = -1; //this file part is downloading 
+        args->cnrt->flag = 0; 
+        goto clean;
     }
-    if(sst.file_exist_flag != 1 || sst.file_size == 0)
+    if(sst.file_exist_flag == 0 || sst.file_size == 0)
     {
-        printf("sst.file_exist_flag = %d\n sst.file_size = %llu\n", sst.file_exist_flag, sst.file_size);
-        printf("file not exist or file size is 0\n");
-        close(sock);
-        return (void*)-1;
+        printf("%d,sst.file_exist_flag = %d, sst.file_size = %llu\n",__LINE__, sst.file_exist_flag, sst.file_size);
+        args->fpt->flag = -1; //this file part is downloading 
+        args->cnrt->flag = 0; 
+        goto clean;
     }
 
-    nwrite = args->fpt.data_size; // the data will be send
+    args->cnrt->flag = 1;   // record this node has request file
+    nwrite = args->fpt->data_size; // the data will be send
 
-    fd = open(sst.file_path, O_CREAT|O_WRONLY, 0755);
-    printf("while :read from nodecfs data\n");
-    lseek(fd, args->fpt.offset, SEEK_SET);
+    sprintf(download_path, "%s%s", g_config->work_dir, sst.file_path);
+    //fd = open(sst.file_path, O_CREAT|O_WRONLY, 0755);
+    fd = open(download_path, O_CREAT|O_WRONLY, 0755);
 
+    lseek(fd, args->fpt->offset, SEEK_SET);
+
+    printf("(line:%d)while :read from nodecfs data,write to:%s, offset:%ld\n",__LINE__, download_path, args->fpt->offset);
     while((rnd = cfs_readn(sock, recv_buff, sizeof(recv_buff))) != 0) // write buff to file
     {    
-        printf("read data from node cfs size rnd = %d\n",rnd);
+        printf("read data from node cfs(sockfd=%d) size rnd = %d\n",sock, rnd);
         wnd = cfs_writen(fd, recv_buff, rnd);
-        printf("write to files data size wnd= %d\n",wnd);
+        printf("write to files(sock:%d, fd:%d) data size wnd= %d\n",sock, fd, wnd);
         nwrite -= rnd;
     }
 
     if(nwrite >  0)
     {
-        args->fpt.flag = 0;   //TODO:record thhis file part download  failed,should feedcack to global struct...
+        printf("get data error.,nwite=%d\n", nwrite);
         pthread_mutex_lock(&g_mutex_lock);
-        g_download_stat = 1;
+        args->fpt->flag = -1;   //record thhis file part download  failed
+        //g_download_stat = 1;
         pthread_mutex_unlock(&g_mutex_lock);
-        printf("get data error.\n");
+    }
+    else
+    {
+        printf("get data ok.\n");
+        pthread_mutex_lock(&g_mutex_lock);
+        args->fpt->flag = 1; //this file part download success
+        pthread_mutex_unlock(&g_mutex_lock);
     }
 
-clean:
     close(fd);
+clean:
     close(sock);
-    if (recv_buff != NULL) {
-        free(recv_buff);
-        recv_buff = NULL;
-    }
     my_cfs_exit_download(args, NULL, 0);
     return (void *)0;
 }
 
-static void     my_cfs_exit_download (my_cfs_thread_arg_t *args, void *body_buff, int code)
+static void  my_cfs_exit_download (my_cfs_thread_arg_t *args, void *body_buff, int code)
 {
-    if(NULL != body_buff)
+    pthread_mutex_lock(&g_mutex_lock);
+    int thread = *args->nthread;
+    if (thread > 0){
+        *args->nthread = --thread;
+    }
+    pthread_mutex_unlock(&g_mutex_lock);
+
+    if(NULL != body_buff){
         free(body_buff);
+        body_buff = NULL;
+    }
+
+    if(NULL != args){
+        free(args);
+        args = NULL;
+    }
+    pthread_exit(0);
 }
 
 
@@ -1523,12 +1598,12 @@ cfs_disk_init(MYSQL *conn_ptr, cfs_disk_t **disk_buff, unsigned long *len)
     db_free_result(data_res);
 }
 
-    static void*    
+    static void    
 signal_hander(int num)
 {
     g_quit = 1;
     cfs_log(NOTICE, "Receive exit signals USR1");
-    return (void *)0;
+    return ;
 }
 
     static int
@@ -1642,7 +1717,7 @@ cfs_get_localtime(char *date_str)
 }
 
     void
-cfs_split(const char *str, const char delimiter, char **key, char **val)
+cfs_split(char *str, const char delimiter, char **key, char **val)
 {
     int len;
     if (str == NULL)
@@ -1831,6 +1906,7 @@ void* cfs_server_run()
         if(child==0)   
         {      
             close(sockfd);   
+            printf("pid=%d, do_send_file()\n",child);
             do_send_file(connfd);
             close(connfd);
             exit(0);   
@@ -1870,8 +1946,13 @@ static int do_send_file(int sockfd)
         if(0 == access(req_file_path, R_OK))
         {
             sst_tmp.file_exist_flag = 1;
+            sst_tmp.file_size = get_file_size(req_file_path);
         }
-        sst_tmp.file_size = get_file_size(req_file_path);
+        else
+        {
+            sst_tmp.file_exist_flag = 0;
+            sst_tmp.file_size = 0;
+        }
 
         wnd = cfs_writen(sockfd, (char*)&sst_tmp, sizeof(send_struct_t));
         printf("%d,write struct size=%d, sst_tmp.file_size=%llu, sst_tmp.file_exist_flag= %d\n",__LINE__,wnd, sst_tmp.file_size, sst_tmp.file_exist_flag);
@@ -1887,7 +1968,6 @@ static int do_send_file(int sockfd)
     if(NULL == filep)
     {
         printf("file_path,%s:NULL == filep\n",req_file_path);
-        fclose(filep);
         return -1;
     }
     fseek(filep, sst_tmp.offset, SEEK_SET);
@@ -1897,6 +1977,7 @@ static int do_send_file(int sockfd)
         if((data_rds = fread(rw_buf, 1,sizeof(rw_buf), filep)) == -1)
         {
             cfs_log(ERR, "read file error");
+            printf("(line:%d)read file error",__LINE__);
             fclose(filep);
             return -1;
         }

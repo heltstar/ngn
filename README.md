@@ -1,7 +1,8 @@
 
-cdn server download app   
-sudo apt-get install libmysqld-dev  
-
+=======
+cdn server download app    
+sudo apt-get install libmysqld-dev    
+     
 TODO:    
 1、文件大小分块，每块4M   
 2、每块对应一个下载线程    
