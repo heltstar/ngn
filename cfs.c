@@ -161,10 +161,7 @@ int main(int argc, char **argv)
 						((header.http_code == 200 || header.http_code == 206) && req_record->is_hdfs == 0)){
 					req_record->file_size = header.content_length;
 test:
-                    header.content_length = atoi(result_row[2]); // just for test:vbox.exe
-                    //header.content_length = 107394336; // just for test:vbox.exe
-                    //header.content_length = 1116778015; // just for test:dmj.rmvb
-
+                    ;// for test
                     cfs_cfsedge_config_t *pccc = g_config->cfsedge;// first try to get resources from other cfs nodes.
                     long long f_size = atoll(result_row[2]);
                     if(NULL != pccc)
@@ -615,13 +612,25 @@ my_cfs_download(cfs_cfsedge_config_t *pccc, char *file_path, long long file_size
             }
             pthread_mutex_unlock(&g_mutex_lock);
         }
+        else
+        {
+            free(args);
+        }
         if(++cnt >= g_config->cfsedge_nums)
             cnt %= g_config->cfsedge_nums;
+         usleep(200000);
     }
 
     // wait thread all download done
     printf("(line:%d)before while nthread != 0,  nthread = %d\n",__LINE__, nthread);
     while (nthread != 0) {
+        for(i=0;i< package_nums; i++)
+        {
+            if(fpt[i].flag != 1)
+            {
+                printf("not download success filep arts id:%d, flag=%d\n",i, fpt[i].flag);
+            }
+        }
         if (file_size > (30 * 1024 * 1024)){
             printf("nthread=%d, sleep 5 second\n", nthread);
             sleep(5);
@@ -1067,14 +1076,14 @@ my_cfs_download_part(void *params)
 
     if(nwrite >  0)
     {
-        printf("get data error, nwite=%lld\n", nwrite);
+        printf("(line:%d)get data error, nwite=%lld\n",__LINE__, nwrite);
         pthread_mutex_lock(&g_mutex_lock);
         args->fpt->flag = -1;   //record thhis file part download  failed
         pthread_mutex_unlock(&g_mutex_lock);
     }
     else
     {
-        printf("nwrite= %lld, get data ok.\n", nwrite);
+        printf("(line:%d)nwrite= %lld, get data ok.\n",__LINE__, nwrite);
         pthread_mutex_lock(&g_mutex_lock);
         args->fpt->flag = 1; //this file part download success
         pthread_mutex_unlock(&g_mutex_lock);
