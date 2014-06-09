@@ -113,11 +113,15 @@ int main(int argc, char **argv)
         if (((long int)rows) != 0){
             int flag = 0; 
             result_row = mysql_fetch_row(data_res);
-			req_record->req_path = strdup(result_row[1]);
+			req_record->file_path = strdup(result_row[1]);
 
+            printf("result_row[1]= %s\n", result_row[1]);
+            printf("req_record->req_path = %s\n", req_record->req_path);
 			char now_date_str[32] = {0};
 			cfs_get_localtime(now_date_str);
 			// update record start download date
+
+            cfs_log(NOTICE, "mysql select UPDATE"); 
 			sprintf(sql, "UPDATE %s SET start_date = '%s' WHERE id = %s", T_CDN_DOWN_QUEUE, now_date_str, result_row[0]);
 			if (db_query(conn_ptr, sql)){
 				cfs_log(ERR, "query update date error");
@@ -148,41 +152,49 @@ int main(int argc, char **argv)
 
 			req_record->is_update = atoi(result_row[3]);
 
+
+            cfs_log(NOTICE, "before cfs_get_header()"); 
+            printf("(line:%d)before cfs_get_header()\n",__LINE__); 
 			cfs_http_header_t header = {0};
-            goto test; //just for test
 			int nres = cfs_get_header(req_record, &header);
 			if (nres == 0){            
-				// printf("path=%s\nsize=%lld\nhost=%s\napi=%s\nupdate=%d\nhdfs=%d\nhhttp=%d\nhttp=%d\n", 
-				//     req_record->file_path, header.content_length, 
-				//     req_record->req_host, req_record->req_path, req_record->is_update, 
-				//     req_record->is_hdfs, header.hdfs_code, header.http_code);
+				 printf("path=%s\nsize=%lld\nhost=%s\napi=%s\nupdate=%d\nhdfs=%d\nhhttp=%d\nhttp=%d\n", 
+				     req_record->file_path, header.content_length, 
+				     req_record->req_host, req_record->req_path, req_record->is_update, 
+				     req_record->is_hdfs, header.hdfs_code, header.http_code);
 
 				if (((header.http_code == 200 || header.http_code == 206) && req_record->is_hdfs == 1 && header.hdfs_code == 1000) || 
 						((header.http_code == 200 || header.http_code == 206) && req_record->is_hdfs == 0)){
 					req_record->file_size = header.content_length;
-test:
-                    ;// for test
+                    printf("before pccc\n");// for test
                     cfs_cfsedge_config_t *pccc = g_config->cfsedge;// first try to get resources from other cfs nodes.
-                    long long f_size = atoll(result_row[2]);
+                   // long long f_size = atoll(result_row[2]);
                     if(NULL != pccc)
                     {
-                        printf("try to get file(file_path=%s, file_size=%lld) from cfsnode, cfs_download start\n",result_row[1], f_size);
-                        //int flg = my_cfs_download(pccc, result_row[1], header.content_length);
-                        int flg = my_cfs_download(pccc, result_row[1], f_size);
+                        //printf("try to get file(file_path=%s, file_size=%lld) from cfsnode, cfs_download start\n",result_row[1], f_size);
+                        printf("try to get file(file_path=%s, file_size=%lld) from cfsnode, cfs_download start\n",req_record->file_path, req_record->file_size);
+                        int flg = my_cfs_download(pccc, req_record->file_path, req_record->file_size);
+                        //int flg = my_cfs_download(pccc, result_row[1], f_size);
                         if(flg == 0)
                         {
-                            printf("cfs_download success!!\n");
+                            printf("my_cfs_download success!!\n");
                             goto cfs;  
                         }
-                        printf("cfs_download failed!!\n");
+                        printf("my_cfs_download failed!!\n");
                     } 
-     
                     printf("second try to get resources(file_path=%s) from origin\n",result_row[1]);
+                    cfs_log(NOTICE,"second try to get resources(file_path=%s) from origin\n",result_row[1]);
 					if (g_config->io_utilization == 0) {
+                        printf("(line:%d) g_config->io_utilization == 0,  nres=%d\n",__LINE__, nres);
 						cfs_download(req_record, g_config->work_dir);
 					}else{
 						cfs_disk_t *item = NULL;
+
+                        printf("(line:%d)before cfs_download test,  nres=%d\n",__LINE__, nres);
+                        cfs_log(NOTICE,"(line:%d)before cfs_download test,  nres=%d\n",__LINE__, nres);
 						nres = cfs_iostats(iostat_fd, disk, disk_len, &item);
+                        cfs_log(NOTICE,"(line:%d)after cfs_download test,  nres=%d\n",__LINE__, nres);
+                        printf("(line:%d)after cfs_download test,  nres=%d\n",__LINE__, nres);
 						if (nres == -1) {
 							cfs_log(ERR, "get iostat failed sleep 15s");
 							sleep(15);
@@ -194,7 +206,9 @@ test:
 							goto end;
 						}else{
 							nres = 0;
+                            printf("(line:%d) cfs_download test,  nres=%d\n",__LINE__, nres);
 							nres = cfs_download(req_record, item->work);
+                            printf("(line:%d) cfs_download test,  nres=%d\n",__LINE__, nres);
 							if (nres == 0) {
 								sprintf(sql, "UPDATE %s SET disk_id = %d WHERE id = %s", T_CDN_DOWN_QUEUE, item->id, result_row[0]);
 								if (db_query(conn_ptr, sql)){
@@ -205,12 +219,15 @@ test:
 					}
 				}else{;
 					cfs_log(ERR, "Get %s %s is failed code %d hcode %d", req_record->req_path, req_record->file_path, header.http_code, header.hdfs_code);
+					printf("Get %s %s is failed code %d hcode %d\n", req_record->req_path, req_record->file_path, header.http_code, header.hdfs_code);
 				}
 			}else{
 				cfs_log(WARN, "Connection %s:%d failed Get file path %s %s", req_record->req_host, req_record->req_port, req_record->req_path, req_record->file_path);
+				printf("Connection %s:%d failed Get file path %s %s\n", req_record->req_host, req_record->req_port, req_record->req_path, req_record->file_path);
 			}
 cfs:
             // delete file record mysql trigger insert to cdn_file_records table if disk_id > 0 
+            printf("(line:%d) cfs after\n", __LINE__);
 			sprintf(sql, "DELETE FROM %s WHERE id = %s", T_CDN_DOWN_QUEUE, result_row[0]);
 			if (db_query(conn_ptr, sql)){
 				cfs_log(ERR, "query delete date error");
@@ -222,6 +239,7 @@ end:
 				cfs_free(req_record->req_host);
 				cfs_free(req_record->req_path);
 			}
+            printf("(line:%d) end after\n", __LINE__);
 			// sleep(1);
 			// break;
 		}else{
@@ -449,7 +467,7 @@ cfs_download(cfs_req_t *req_info, char *work_path)
 		}else{
 			cfs_log(NOTICE, "download %s %s failed", req_info->req_host, req_info->req_path);
 		}
-		unlink(tmp_name);
+//		unlink(tmp_name); //TODO:just for test
 		return -1;
 	}
 
@@ -646,11 +664,15 @@ my_cfs_download(cfs_cfsedge_config_t *pccc, char *file_path, long long file_size
 end:
     // download failed delete temp file
     if (g_download_stat == 1){
-        cfs_log(NOTICE, "download %s failed", file_path);
+        cfs_log(NOTICE, "(line:%d)download %s failed",__LINE__, file_path);
         printf("(line:%d)download %s failed\n", __LINE__, file_path);
         free(fpt);
         free(cnr);
-//        unlink(file_path); //TODO:now just for test
+        pthread_mutex_lock(&g_mutex_lock);
+        g_download_stat = 0;                 
+        pthread_mutex_unlock(&g_mutex_lock);
+        printf("(line:%d)g_download_stat =  %d \n", __LINE__, g_download_stat);
+        // unlink(file_path); //TODO:now just for test
         return -1;
     }
 
@@ -1829,20 +1851,41 @@ cfs_iostats(const int fd, cfs_disk_t *disk, const unsigned long len, cfs_disk_t 
     char  *chres       = NULL;
     char  *idx         = NULL;
 
+    if(NULL == disk)
+        printf("(line:%d) NULL == disk\n", __LINE__);
+    printf("(line:%d)len=%lu\n",__LINE__, len);
+    
     for  (i = 0; i < len; ++i)
     {
+        printf("(line:%d)iostat i = %d\n",__LINE__,i);
+        if(disk[i].device == NULL)
+        {
+            printf("(line:%d)disk[i].device == NULL\n",__LINE__);
+            return -1;
+        }
+        else
+            printf("(line:%d)disk[i].device != NULL, %s\n",__LINE__, disk[i].device);
         sprintf(cmd_buff, "IOSTAT %s", disk[i].device);
+        
+        printf("(line:%d)cfs_writen before\n",__LINE__);
         cfs_writen(fd, cmd_buff, strlen(cmd_buff));
         // send command
+        printf("(line:%d)cfs_writen after\n",__LINE__);
         cfs_readn(fd, &size, sizeof(size));
-
         // recv status
+        printf("(line:%d)cfs_readn after\n",__LINE__);
         char *buff = cfs_malloc(size + 1);
+        if(NULL == buff)
+        {
+            printf("(line:%d)NULL == buff \n",__LINE__);
+            return -1;
+        }
         cfs_readn(fd, buff, size);
         chres = cfs_ioerror(buff);
         // get iostat success ?
         if (chres != NULL) {
-            cfs_log(WARN, "%s %s", cmd_buff, chres);
+            printf("(line:%d)%s %s",__LINE__, cmd_buff, chres);
+            cfs_log(WARN, "(line:%d)%s %s",__LINE__, cmd_buff, chres);
             cfs_free(chres);
             continue;
         }
@@ -1851,6 +1894,8 @@ cfs_iostats(const int fd, cfs_disk_t *disk, const unsigned long len, cfs_disk_t 
         // recv content
         cfs_readn(fd, &size, sizeof(size));
         buff = cfs_malloc(size + 1);
+
+        printf("(line:%d)NULL != buff \n",__LINE__);
         cfs_readn(fd, buff, size);
         idx = strrchr(buff, ',');
         io_util = atof(++idx);
@@ -1992,6 +2037,7 @@ static void* do_send_file(void *params)
 
         printf("(line:%d)write struct size=%d, sst_tmp.file_size=%llu, sst_tmp.file_exist_flag= %d\n",__LINE__,wnd, sst_tmp.file_size, sst_tmp.file_exist_flag);
         close(sockfd);
+        printf("pthread exit\n");
         pthread_exit((void*)-1);
     }
     else
@@ -2015,6 +2061,7 @@ static void* do_send_file(void *params)
         if(sst_tmp.file_exist_flag == 0)
         {
             close(sockfd);
+            printf("pthread exit\n");
             pthread_exit((void*)0);
         }
     }
