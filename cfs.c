@@ -109,7 +109,6 @@ int main(int argc, char **argv)
         my_ulonglong rows = mysql_num_rows(data_res);
 
         cfs_log(NOTICE, "after mysql select CMD, rows=%lld",rows); 
-//        printf("after mysql select CMD, rows=%lld\n",rows); 
         if (((long int)rows) != 0){
             int flag = 0; 
             result_row = mysql_fetch_row(data_res);
