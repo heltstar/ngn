@@ -28,12 +28,15 @@ typedef struct cfs_node_record
     char        host[256];
     short       port;
     char        file_path[256];
+    long long   download_data_sizes; // record sum of data sizes from this cfs node when download a file(bytes)
+    long        download_time_spend;  // record sum of time spend from this cfs node when download a file(us)
 }cfs_node_record_t;
 
 typedef struct my_thread_arg { // thread struct 
     file_part_t         *fpt;
     cfs_node_record_t   *cnrt;
 	int                 *nthread; 
+    char                *path;
 } my_cfs_thread_arg_t;
 
 typedef struct cfs_req {
@@ -134,7 +137,8 @@ static int      cfs_preg_match (char pattern[], char str[]);
 static int      cfs_get_localtime (char *date_str);
 //     static void     cfs_clear_space (const char *str, char *dest);
 static int      cfs_download (cfs_req_t *req_info, char *work_path);
-static int      my_cfs_download (cfs_cfsedge_config_t *pccc, char *file_path, long long file_size);
+//static int      my_cfs_download (cfs_cfsedge_config_t *pccc, char *file_path, long long file_size, char *work_path);
+static int      my_cfs_download (cfs_req_t *req_info, char *work_path, cfs_cfsedge_config_t *pccc);
 
 static int      cfs_mkrdir (char *file_path, mode_t mode);
 static void*    cfs_download_part (void *params);

@@ -1,5 +1,5 @@
 [global]
-document = /usr/local/nginx-1.6.0/html;
+document = /usr/local/nginx-1.6.0/html/;
 log_path = /var/log/cfs.log;
 log_size = 10;                  # log size unit MB
 threads = 4;
@@ -9,7 +9,8 @@ groupname = www-data;
 io-utilization = 70;           # IO CPU utilization gt this value suspended file read,write if 0 close IO detection
 io-host = 127.0.0.1;
 io-port = 3003;
-cfs_nums = 2;
+server-port = 8000;            # cfs server listen on this port 
+cfs_nums = 2;                  # the numbers of [cfs0], [cfs1]...cfs[n-1] below,
 
 [origin]
 host = cdnfiles.reacheyes.com; # api host 192.168.20.204
@@ -27,11 +28,11 @@ user = testuser;
 password = testpword;
 database = cdn_db;
 
-# this should be like this : cfs[0,1,2...]
+# this should be like this : cfs[0],cfs[1],cfs[2]...cfs[n-1]
 [cfs0]
-host = 192.168.56.104;
-port = 80;
-key = key123;
+host = 192.168.56.104;   # remote cfs node server host
+port = 80;               # remote cfs node server port
+key = key123;            # use this key to visit remote cfs node server,now is not used.
 
 [cfs1]
 host = 192.168.56.105;
